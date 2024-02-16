@@ -1,0 +1,3 @@
+telethon
+fastapi
+uvicorn[standard]
