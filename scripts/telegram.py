@@ -31,13 +31,13 @@ entity = None
 bot = TelegramClient('bot', TELEGRAM_API_ID, TELEGRAM_API_HASH).start(bot_token=TELEGRAM_BOT_TOKEN)
 
 
-async def splitFileIntoRar(fileName, filePath, splitSize=(maxFileSize/1024)):
+async def splitFileIntoRar(fileName, filePath):
     if not os.path.exists(tempFolder):
         os.makedirs(tempFolder)
     if "." in fileName:
         fileNameWithoutExtension = fileName.rsplit('.', 1)[0]
     subprocess.run(
-        ["rar", "a", '-m0', '-ep', f'-v{str(splitSize)}', f'{tempFolder}/{fileNameWithoutExtension}.rar', filePath])
+        ["7z", "a", '-mx0', '-v2000m', f'{tempFolder}/{fileNameWithoutExtension}.7z', filePath])
     return os.listdir(tempFolder)
 
 async def uploadFileToTelegram(fileName=FILE_NAME, filePath=FILE_PATH, fileCaption=FILE_CAPTION):
