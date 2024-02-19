@@ -23,6 +23,7 @@ Follow these steps to install and configure Telegramarr:
      -v "<path-to-your-movies-folder>:/app/movies":ro \
      -d akhilrana/telegramarr:latest 
     ```
+Note: Use akhilrana/telegramarr:arm64 for ARM64 devices.
 
 5. Verify that Telegramarr is running by navigating to `http://<your-ip>:8000/` in your web browser. You should see a message that says "Hello: Telegramarr". 
 6. In your Radarr settings, navigate to `Connect > Add New > Webhook`. Add the URL `http://<your-ip>:8000/get-from-radarr` and select only the "On Import" and "On Upgrade" events.
