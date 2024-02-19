@@ -5,6 +5,7 @@ import shutil
 from telethon import TelegramClient
 from telethon.tl.types import PeerChat
 import argparse
+import time
 
 parser = argparse.ArgumentParser(description='Script to upload files to telegram and more')
 parser.add_argument('--telegram_bot_token', type=str, help='Bot token for Telegram', required=True)
@@ -69,8 +70,11 @@ async def uploadProgressCallback(current, total):
         callBackTime = datetime.now()
 
 
-
 async def main():
+    print("waiting for 30 sec.")
+    time.sleep(30) #30sec delay so that the file system reloads with the new file. specially in case of rclone mounts
+    if not os.path.exists(FILE_PATH):
+        print("File does not exist.")
     if(os.path.getsize(FILE_PATH) <= maxFileSize):
         await uploadFileToTelegram()
     else:
