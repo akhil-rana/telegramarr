@@ -4,7 +4,7 @@ COPY . /app
 
 RUN apt update && \
     apt upgrade -y && \
-    apt install p7zip-full -y
+    apt install p7zip-full cargo -y
 
 RUN pip3 install --upgrade pip
 RUN pip3 install --no-cache-dir -r requirements.txt
