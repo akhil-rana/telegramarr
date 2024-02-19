@@ -2,7 +2,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from utils.validations import validateRadarrSchema
 import json
-from env import RADARR_MOVIE_FOLDER_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN, TELEGRAM_RADARR_CHAT_ID
+from config.env import RADARR_MOVIE_FOLDER_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN, TELEGRAM_RADARR_CHAT_ID
 
 
 app = FastAPI()
