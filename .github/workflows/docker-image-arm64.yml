@@ -17,7 +17,7 @@ jobs:
           sudo hdiutil attach Docker.dmg
           sudo /Volumes/Docker/Docker.app/Contents/MacOS/install  --accept-license
           sudo hdiutil detach /Volumes/Docker
-          open -a Docker
+          open /Applications/Docker.app
           until sudo docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}; do sleep 1; done
           until sudo docker build -t akhilrana/telegramarr:latest-arm64 .; do sleep 1; done
           sudo docker push akhilrana/telegramarr:latest-arm-64
