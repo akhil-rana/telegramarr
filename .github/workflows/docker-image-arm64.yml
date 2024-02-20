@@ -29,6 +29,6 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/arm64/v8
+          platforms: linux/aarch64
           push: true
           tags: akhilrana/telegramarr:latest-arm64
