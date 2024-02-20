@@ -10,14 +10,14 @@ jobs:
     steps:
       - name: Build and push ARM64 Docker image
         run: |
-          apt update
-          apt upgrade -y
-          apt install apt-transport-https ca-certificates curl software-properties-common -y
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-          apt update
-          apt-cache policy docker-ce
-          apt install docker-ce -y
-          docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}
-          docker buildx build --platform linux/arm64 -t akhilrana/telegramarr:arm64-latest .
-          docker push akhilrana/telegramarr:arm64-latest
+          sudo apt update
+          sudo apt upgrade -y
+          sudo apt install apt-transport-https ca-certificates curl software-properties-common -y
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt update
+          sudo apt-cache policy docker-ce
+          sudo apt install docker-ce -y
+          sudo docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}
+          sudo docker buildx build --platform linux/arm64 -t akhilrana/telegramarr:arm64-latest .
+          sudo docker push akhilrana/telegramarr:arm64-latest
