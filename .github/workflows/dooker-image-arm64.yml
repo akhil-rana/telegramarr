@@ -1,4 +1,4 @@
-name: Publish Docker Image to Docker Hub (ARM64v8)
+name: (ARM64) Publish Docker Image to Docker Hub
 
 on:
   workflow_dispatch:  # Triggered manually
@@ -6,7 +6,7 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    name: Build on ubuntu-22.04 armv8
+    name: Build on ubuntu-22.04 aarch64
     steps:
       - uses: actions/checkout@v4
       - uses: uraimo/run-on-arch-action@v2
@@ -18,13 +18,13 @@ jobs:
 
           run: |
             apt update
-            apt upgrade
-            apt install apt-transport-https ca-certificates curl software-properties-common
+            apt upgrade -y
+            apt install apt-transport-https ca-certificates curl software-properties-common -y
             curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
             sudo apt update
             apt-cache policy docker-ce
-            sudo apt install docker-ce
+            sudo apt install docker-ce -y
             docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}
             docker build -t akhilrana/telegramarr:arm64-latest .
             docker push akhilrana/telegramarr:arm64-latest
