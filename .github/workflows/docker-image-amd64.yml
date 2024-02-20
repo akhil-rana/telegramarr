@@ -1,4 +1,4 @@
-name: Publish Docker Image to Docker Hub (ARM64)
+name: Publish Docker Image to Docker Hub (AMD64)
 
 on:
   workflow_dispatch:  # Triggered manually
@@ -19,7 +19,7 @@ jobs:
 
       - name: Build and push ARM64 Docker image
         run: |
-          docker build -t akhilrana/telegramarr:latest-arm64 .
-          docker push akhilrana/telegramarr:latest-arm64
+          docker build -t akhilrana/telegramarr:latest .
+          docker push akhilrana/telegramarr:latest
         env:
           DOCKER_CLI_EXPERIMENTAL: enabled
