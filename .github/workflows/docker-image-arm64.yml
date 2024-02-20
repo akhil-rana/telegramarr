@@ -25,9 +25,10 @@ jobs:
           username: akhilrana
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and push ARM64 Docker image
-        run: |
-          docker build -t akhilrana/telegramarr:latest .
-          docker push akhilrana/telegramarr:latest
-        env:
-          DOCKER_CLI_EXPERIMENTAL: enabled
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/arm64/v8
+          push: true
+          tags: akhilrana/telegramarr:latest-arm64
