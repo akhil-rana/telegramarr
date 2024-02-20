@@ -14,6 +14,7 @@ jobs:
       - name: Build and push ARM64 Docker image
         run: |
           brew install colima
+          brew install docker
           colima start
           sudo docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}
           sudo docker build -t akhilrana/telegramarr:latest-arm64 .
