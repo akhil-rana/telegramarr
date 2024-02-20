@@ -25,6 +25,7 @@ jobs:
             apt update
             apt-cache policy docker-ce
             apt install docker-ce -y
+            docker install docker-buildx
             docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}
-            docker build -t akhilrana/telegramarr:arm64-latest .
+            docker buildx build --platform linux/arm64 -t akhilrana/telegramarr:arm64-latest .
             docker push akhilrana/telegramarr:arm64-latest
