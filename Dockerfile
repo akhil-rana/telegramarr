@@ -15,6 +15,7 @@ WORKDIR /app
 COPY --from=builder /app /app
 COPY --from=builder /opt/venv /opt/venv
 RUN apt update && \
+    apt upgrade && \
     apt install p7zip-full -y
 ENV PATH="/opt/venv/bin:$PATH"
 EXPOSE 8000
