@@ -5,7 +5,7 @@ COPY . /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN apt update && \
-    apt install p7zip-full cargo -y && \
+    apt install cargo -y && \
     pip3 install --upgrade pip && \
     pip3 install --no-cache-dir -r src/requirements.txt
 
