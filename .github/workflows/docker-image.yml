@@ -17,19 +17,9 @@ jobs:
           username: akhilrana
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
-
       - name: Build and push ARM64 Docker image
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            akhilrana/telegramarr:latest-arm64
-          builder: buildx
-          platforms: linux/arm64
+        run: |
+          docker build -t akhilrana/telegramarr:latest-arm64 .
+          docker push akhilrana/telegramarr:latest-arm64
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
