@@ -19,7 +19,6 @@ jobs:
           sudo hdiutil detach /Volumes/Docker
           export PATH=$PATH:~/.docker/bin
           sudo xattr -r -d com.apple.quarantine /Applications/Docker.app
-          sudo /Applications/Docker.app/Contents/MacOS/Docker --unattended --install-privileged-components
           open -a /Applications/Docker.app
           until sudo docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}; do sleep 1; done
           until sudo docker build -t akhilrana/telegramarr:latest-arm64 .; do sleep 1; done
