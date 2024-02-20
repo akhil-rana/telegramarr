@@ -15,7 +15,7 @@ jobs:
         run: |
           wget https://desktop.docker.com/mac/main/arm64/137060/Docker.dmg
           sudo hdiutil attach Docker.dmg
-          sudo /Volumes/Docker/Docker.app/Contents/MacOS/install  --accept-license
+          sudo /Volumes/Docker/Docker.app/Contents/MacOS/install  --accept-license --user='$(whoami)'
           sudo hdiutil detach /Volumes/Docker
           sudo xattr -r -d com.apple.quarantine /Applications/Docker.app
           sudo /Applications/Docker.app/Contents/MacOS/Docker --unattended --install-privileged-components
