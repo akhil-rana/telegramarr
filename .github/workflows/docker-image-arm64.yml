@@ -6,25 +6,20 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    name: Build on ubuntu-22.04 aarch64
-    steps:
-      - uses: actions/checkout@v4
-      - uses: uraimo/run-on-arch-action@v2
-        name: Run commands
-        id: runcmd
-        with:
-          arch: aarch64
-          distro: ubuntu22.04
 
-          run: |
-            apt update
-            apt upgrade -y
-            apt install apt-transport-https ca-certificates curl software-properties-common -y
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-            apt update
-            apt-cache policy docker-ce
-            apt install docker-ce -y
-            docker login -u akhilrana -p ${{ secrets.DOCKER_PASSWORD }}
-            docker buildx build --platform linux/arm64 -t akhilrana/telegramarr:arm64-latest .
-            docker push akhilrana/telegramarr:arm64-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v1
+        with:
+          username: akhilrana
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push ARM64 Docker image
+        run: |
+          docker buildx build --platform linux/arm64 -t akhilrana/telegramarr:arm64-latest .
+          docker push akhilrana/telegramarr:arm64-latest
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
