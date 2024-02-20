@@ -2,7 +2,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from utils.validations import validateRadarrSchema
 import json
-from config.env import RADARR_MOVIE_FOLDER_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN, TELEGRAM_RADARR_CHAT_ID
+from config.env import RADARR_MOVIE_FOLDER_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN, TELEGRAM_RADARR_CHAT_ID, TELEGRAMARR_DELAY_TIME, TELEGRAMARR_FILE_CAPTION_CONTENT
 
 
 app = FastAPI()
@@ -18,16 +18,21 @@ async def process_radarr_webhook(body):
         movie_folder_path = body["movie"]["folderPath"]
         movie_file_name = body['movieFile']['relativePath']
         local_movie_file_path = f"{RADARR_MOVIE_FOLDER_PATH}{movie_folder_path.split('/')[-1]}/{movie_file_name}"
+        if TELEGRAMARR_FILE_CAPTION_CONTENT == 'fileName':
+            fileCaption = movie_file_name
+        elif TELEGRAMARR_FILE_CAPTION_CONTENT == 'filePath':
+            fileCaption = local_movie_file_path
         command = [
             "python3",
-            "./scripts/telegram.py",
+            "./src/scripts/telegram.py",
             f"--telegram_bot_token='{TELEGRAM_BOT_TOKEN}'",
             f"--telegram_api_hash='{TELEGRAM_API_HASH}'",
             f"--telegram_api_id='{TELEGRAM_API_ID}'",
             f"--telegram_radarr_chat_id={TELEGRAM_RADARR_CHAT_ID}",
             f"--file_name='{movie_file_name}'",
             f"--file_path='{local_movie_file_path}'",
-            f"--file_caption='{local_movie_file_path}'",
+            f"--file_caption='{fileCaption}'",
+            f"--delay_time={TELEGRAMARR_DELAY_TIME}",
         ]
         # Run the command in the background
         process = await asyncio.create_subprocess_shell(" ".join(command))

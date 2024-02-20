@@ -4,7 +4,6 @@ WORKDIR /app
 COPY . /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-
 RUN apt update && \
     apt install p7zip-full cargo -y && \
     pip3 install --upgrade pip && \
@@ -16,8 +15,7 @@ WORKDIR /app
 COPY --from=builder /app /app
 COPY --from=builder /opt/venv /opt/venv
 RUN apt update && \
-    apt upgrade && \
     apt install p7zip-full -y
 ENV PATH="/opt/venv/bin:$PATH"
 EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "main:app", "--app-dir", "src",  "--host", "0.0.0.0", "--port", "8000", "--reload"]

@@ -15,6 +15,7 @@ parser.add_argument('--telegram_radarr_chat_id', type=int, help='Telegram Chat I
 parser.add_argument('--file_name', type=str, help='File Name for the file to be uploaded', required=True)
 parser.add_argument('--file_path', type=str, help='File Path for the file to be uploaded', required=True)
 parser.add_argument('--file_caption', type=str, help='Caption of the file to be sent', required=True)
+parser.add_argument('--delay_time', type=int, help='Delay in starting the script in seconds', required=True)
 
 args = parser.parse_args()
 TELEGRAM_BOT_TOKEN = args.telegram_bot_token
@@ -24,6 +25,7 @@ TELEGRAM_RADARR_CHAT_ID = args.telegram_radarr_chat_id
 FILE_NAME = args.file_name
 FILE_PATH = args.file_path
 FILE_CAPTION = args.file_caption
+DELAY_TIME = args.delay_time
 maxFileSize = 1024 * 1024 * 2048  # in Bytes
 tempFolder = "./temp"
 
@@ -69,21 +71,28 @@ async def uploadProgressCallback(current, total):
         statusMessage = await bot.edit_message(entity, statusMessage, status_message_text)
         callBackTime = datetime.now()
 
+def deleteFolder(folderPath):
+    if os.path.exists(folderPath):
+        shutil.rmtree(folderPath)
+        print(f"Folder deleted: {folderPath}")
 
 async def main():
-    print("waiting for 30 sec.")
-    time.sleep(30) #30sec delay so that the file system reloads with the new file. specially in case of rclone mounts
+    deleteFolder(tempFolder)
+    print("waiting for {}sec.".format(DELAY_TIME))
+    time.sleep(DELAY_TIME) # delay so that the file system reloads with the new file. specially in case of rclone mounts
     if not os.path.exists(FILE_PATH):
         print("File does not exist.")
     if(os.path.getsize(FILE_PATH) <= maxFileSize):
         await uploadFileToTelegram()
     else:
-        splitFiles = await splitFileIntoRar(FILE_NAME, FILE_PATH)
-        for currentFileName in splitFiles:
-            await uploadFileToTelegram(currentFileName, tempFolder + "/" + currentFileName, FILE_PATH.rsplit('/', 1)[0] + "/" + currentFileName)
-        if os.path.exists(tempFolder):
-            shutil.rmtree(tempFolder)
-            print(f"Folder deleted: {tempFolder}")
+        try:
+            splitFiles = await splitFileIntoRar(FILE_NAME, FILE_PATH)
+            for currentFileName in splitFiles:
+                await uploadFileToTelegram(currentFileName, tempFolder + "/" + currentFileName, FILE_PATH.rsplit('/', 1)[0] + "/" + currentFileName)
+            deleteFolder(tempFolder)
+        except Exception:
+            print("error: {}".format(Exception))
+            deleteFolder(tempFolder)
 
 with bot:
     bot.loop.run_until_complete(main())
