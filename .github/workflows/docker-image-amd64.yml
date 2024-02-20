@@ -1,4 +1,4 @@
-name: Publish Docker Image to Docker Hub (AMD64)
+name: (AMD64) Publish Docker Image to Docker Hub
 
 on:
   workflow_dispatch:  # Triggered manually
