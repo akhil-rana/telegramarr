@@ -18,10 +18,6 @@ async def process_radarr_webhook(body):
         movie_folder_path = body["movie"]["folderPath"]
         movie_file_name = body['movieFile']['relativePath']
         local_movie_file_path = f"{RADARR_MOVIE_FOLDER_PATH}{movie_folder_path.split('/')[-1]}/{movie_file_name}"
-        if TELEGRAMARR_FILE_CAPTION_CONTENT == 'fileName':
-            fileCaption = movie_file_name
-        elif TELEGRAMARR_FILE_CAPTION_CONTENT == 'filePath':
-            fileCaption = local_movie_file_path
         command = [
             "python3",
             "./src/scripts/telegram.py",
@@ -31,7 +27,7 @@ async def process_radarr_webhook(body):
             f"--telegram_radarr_chat_id={TELEGRAM_RADARR_CHAT_ID}",
             f"--file_name='{movie_file_name}'",
             f"--file_path='{local_movie_file_path}'",
-            f"--file_caption='{fileCaption}'",
+            f"--file_caption_type='{TELEGRAMARR_FILE_CAPTION_CONTENT}'",
             f"--delay_time={TELEGRAMARR_DELAY_TIME}",
         ]
         # Run the command in the background
