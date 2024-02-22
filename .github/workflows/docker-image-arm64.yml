@@ -24,6 +24,8 @@ jobs:
 
       - name: Build and push ARM64 Docker image
         run: |
-          docker buildx build --platform linux/arm64 --push -t akhilrana/telegramarr:latest-arm64 .
+          docker buildx ls
+          sleep 30
+          docker buildx build --platform linux/arm64,linux/amd64 --push -t akhilrana/telegramarr:multi-arch .
         env:
           DOCKER_CLI_EXPERIMENTAL: enabled
