@@ -2,11 +2,20 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from utils.validations import validateRadarrSchema
 import json
-from config.env import RADARR_MOVIE_FOLDER_PATH, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_BOT_TOKEN, TELEGRAM_RADARR_CHAT_ID, TELEGRAMARR_DELAY_TIME, TELEGRAMARR_FILE_CAPTION_CONTENT
+from config.env import (
+    RADARR_MOVIE_FOLDER_PATH,
+    TELEGRAM_API_ID,
+    TELEGRAM_API_HASH,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_RADARR_CHAT_ID,
+    TELEGRAMARR_DELAY_TIME,
+    TELEGRAMARR_FILE_CAPTION_CONTENT,
+)
 
 
 app = FastAPI()
 queue = asyncio.Queue()
+
 
 @app.get("/")
 def read_root():
@@ -16,7 +25,7 @@ def read_root():
 async def process_radarr_webhook(body):
     if validateRadarrSchema(body):
         movie_folder_path = body["movie"]["folderPath"]
-        movie_file_name = body['movieFile']['relativePath']
+        movie_file_name = body["movieFile"]["relativePath"]
         local_movie_file_path = f"{RADARR_MOVIE_FOLDER_PATH}{movie_folder_path.split('/')[-1]}/{movie_file_name}"
         command = [
             "python3",
@@ -31,8 +40,10 @@ async def process_radarr_webhook(body):
             f"--delay_time={TELEGRAMARR_DELAY_TIME}",
         ]
         # Run the command in the background
+
         process = await asyncio.create_subprocess_shell(" ".join(command))
         await process.wait()
+
 
 async def process_queue():
     while True:
@@ -49,7 +60,10 @@ async def get_from_radarr(request: Request):
         await queue.put(body)  # Put the webhook request body into the queue
         return {"message": "Webhook processed successfully."}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing webhook: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error processing webhook: {str(e)}"
+        )
+
 
 @app.on_event("startup")
 async def startup_event():
