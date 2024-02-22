@@ -2,3 +2,4 @@ telethon
 fastapi
 uvicorn[standard]
 jsonschema
+telethon-tgcrypto

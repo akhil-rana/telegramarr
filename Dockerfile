@@ -5,13 +5,7 @@ COPY . /app
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN apt update && \
-    apt install cargo git -y && \
-    git clone https://github.com/cher-nov/cryptg && \
-    cd cryptg && \
-    pip3 install --no-cache-dir -r requirements.txt && \
-    python setup.py install && \
-    cd .. && \
-    rm -rf cryptg && \
+    apt install gcc -y && \
     pip3 install --upgrade pip && \
     pip3 install --no-cache-dir -r src/requirements.txt
 
