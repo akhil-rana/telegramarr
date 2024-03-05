@@ -20,6 +20,7 @@ Follow these steps to install and configure Telegramarr:
     docker run --name=telegramarr \
      -p 8000:8000 \
      -v "<path-to-your-telegramarr-config-folder>":/app/src/config \
+     -v "<path-to-a-temp-cache-folder>":/app/temp \
      -v "<path-to-your-movies-folder>":/app/movies:ro \
      -d akhilrana/telegramarr 
     ```
