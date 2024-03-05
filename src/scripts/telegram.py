@@ -128,14 +128,19 @@ async def uploadProgressCallback(current, total):
         callBackTime = datetime.now()
 
 
-def deleteFolder(folderPath):
-    if os.path.exists(folderPath):
-        shutil.rmtree(folderPath)
-        print(f"Folder deleted: {folderPath}")
+def deleteFolderContents(folderPath):
+    if os.listdir(folderPath):  # check if folder is not empty
+        for file_name in os.listdir(folderPath):
+            file_path = os.path.join(folderPath, file_name)
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)  # remove the file
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)  # remove dir
+        print(f"Folder contents deleted: {folderPath}")
 
 
 async def main():
-    deleteFolder(tempFolder)
+    deleteFolderContents(tempFolder)
     print("waiting for {}sec.".format(DELAY_TIME))
     time.sleep(
         DELAY_TIME
@@ -151,10 +156,10 @@ async def main():
                 await uploadFileToTelegram(
                     currentFileName, tempFolder + "/" + currentFileName
                 )
-            deleteFolder(tempFolder)
+            deleteFolderContents(tempFolder)
         except Exception:
             print("error: {}".format(Exception))
-            deleteFolder(tempFolder)
+            deleteFolderContents(tempFolder)
 
 
 with bot:
