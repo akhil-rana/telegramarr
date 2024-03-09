@@ -20,9 +20,9 @@ parser.add_argument(
     "--telegram_api_id", type=str, help="API ID for Telegram", required=True
 )
 parser.add_argument(
-    "--telegram_radarr_chat_id",
+    "--telegram_chat_id",
     type=int,
-    help="Telegram Chat ID for the chat/group in which bot is added for Radarr",
+    help="Telegram Chat ID for the chat/group in which bot is added",
     required=True,
 )
 parser.add_argument(
@@ -48,7 +48,7 @@ args = parser.parse_args()
 TELEGRAM_BOT_TOKEN = args.telegram_bot_token
 TELEGRAM_API_HASH = args.telegram_api_hash
 TELEGRAM_API_ID = args.telegram_api_id
-TELEGRAM_RADARR_CHAT_ID = args.telegram_radarr_chat_id
+TELEGRAM_CHAT_ID = args.telegram_chat_id
 FILE_NAME = args.file_name
 FILE_PATH = args.file_path
 FILE_CAPTION_TYPE = args.file_caption_type
@@ -83,7 +83,7 @@ async def splitFileIntoRar(fileName, filePath):
 
 async def uploadFileToTelegram(fileName=FILE_NAME, filePath=FILE_PATH):
     global entity
-    entity = await bot.get_entity(PeerChat(TELEGRAM_RADARR_CHAT_ID))
+    entity = await bot.get_entity(PeerChat(TELEGRAM_CHAT_ID))
     uploadProgressCallback.previous_bytes_uploaded = 0
     global currentFileName, statusMessage
     currentFileName = fileName
