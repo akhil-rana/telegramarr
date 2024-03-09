@@ -1,11 +1,10 @@
 # Telegramarr
 
-Telegramarr is an automated Telegram bot designed to work with Radarr. It listens for Radarr webhooks and sends a movie file to a specified Telegram group or chat when a movie is successfully downloaded and added to the Radarr library.
+Telegramarr is an automated Telegram bot designed to work with Radarr/Sonarr. It listens for webhooks and sends a movie/show file to a specified Telegram group or chat when a movie is successfully downloaded and added to the library.
 
 ## Features
-- Sends a media file to a specified Telegram group or chat when a movie is successfully downloaded and added to the Radarr library. 
+- Sends a media file to a specified Telegram group or chat when a movie is successfully downloaded and added to the Radarr/Sonarr library. 
 - Splits the file into multiple 7z archives and sends them to Telegram to bypass the 2GB file size limit.
-- Coming Soon: Sonarr Support
 
 ## Installation
 
@@ -22,6 +21,7 @@ Follow these steps to install and configure Telegramarr:
      -v "<path-to-your-telegramarr-config-folder>":/app/src/config \
      -v "<path-to-a-temp-cache-folder>":/app/temp \         # optional but recommended
      -v "<path-to-your-movies-folder>":/app/movies:ro \
+     -v "<path-to-your-tvshows-folder>":/app/tvshows:ro \
      -d akhilrana/telegramarr 
     ```
 
