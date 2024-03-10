@@ -2,6 +2,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Request
 from utils.validations import validateSchema
 import json
+import shlex
 from config.env import (
     RADARR_MOVIE_FOLDER_PATH,
     SONARR_TVSHOWS_FOLDER_PATH,
@@ -33,14 +34,14 @@ async def process_radarr_webhook(body):
         command = [
             "python3",
             "./src/scripts/telegram.py",
-            f"--telegram_bot_token='{TELEGRAM_BOT_TOKEN}'",
-            f"--telegram_api_hash='{TELEGRAM_API_HASH}'",
-            f"--telegram_api_id='{TELEGRAM_API_ID}'",
-            f"--telegram_radarr_chat_id={TELEGRAM_RADARR_CHAT_ID}",
-            f"--file_name='{movie_file_name}'",
-            f"--file_path='{local_movie_file_path}'",
-            f"--file_caption_type='{TELEGRAMARR_FILE_CAPTION_CONTENT}'",
-            f"--delay_time={TELEGRAMARR_DELAY_TIME}",
+            f"--telegram_bot_token={shlex.quote(TELEGRAM_BOT_TOKEN)}",
+            f"--telegram_api_hash={shlex.quote(TELEGRAM_API_HASH)}",
+            f"--telegram_api_id={shlex.quote(TELEGRAM_API_ID)}",
+            f"--telegram_radarr_chat_id={shlex.quote(TELEGRAM_RADARR_CHAT_ID)}",
+            f"--file_name={shlex.quote(movie_file_name)}",
+            f"--file_path={shlex.quote(local_movie_file_path)}",
+            f"--file_caption_type={shlex.quote(TELEGRAMARR_FILE_CAPTION_CONTENT)}",
+            f"--delay_time={shlex.quote(str(TELEGRAMARR_DELAY_TIME))}",
         ]
         # Run the command in the background
 
@@ -59,17 +60,17 @@ async def process_sonarr_webhook(body):
         command = [
             "python3",
             "./src/scripts/telegram.py",
-            f"--telegram_bot_token='{TELEGRAM_BOT_TOKEN}'",
-            f"--telegram_api_hash='{TELEGRAM_API_HASH}'",
-            f"--telegram_api_id='{TELEGRAM_API_ID}'",
-            f"--telegram_chat_id={TELEGRAM_SONARR_CHAT_ID}",
-            f"--file_name='{tvshow_file_name}'",
-            f"--file_path='{local_tvshow_file_path}'",
-            f"--file_caption_type='{TELEGRAMARR_FILE_CAPTION_CONTENT}'",
-            f"--delay_time={TELEGRAMARR_DELAY_TIME}",
+            f"--telegram_bot_token={shlex.quote(TELEGRAM_BOT_TOKEN)}",
+            f"--telegram_api_hash={shlex.quote(TELEGRAM_API_HASH)}",
+            f"--telegram_api_id={shlex.quote(TELEGRAM_API_ID)}",
+            f"--telegram_radarr_chat_id={shlex.quote(TELEGRAM_RADARR_CHAT_ID)}",
+            f"--file_name={shlex.quote(movie_file_name)}",
+            f"--file_path={shlex.quote(local_movie_file_path)}",
+            f"--file_caption_type={shlex.quote(TELEGRAMARR_FILE_CAPTION_CONTENT)}",
+            f"--delay_time={shlex.quote(str(TELEGRAMARR_DELAY_TIME))}",
         ]
+        
         # Run the command in the background
-
         process = await asyncio.create_subprocess_shell(" ".join(command))
         await process.wait()
 
