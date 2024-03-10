@@ -63,11 +63,11 @@ async def process_sonarr_webhook(body):
             f"--telegram_bot_token={shlex.quote(TELEGRAM_BOT_TOKEN)}",
             f"--telegram_api_hash={shlex.quote(TELEGRAM_API_HASH)}",
             f"--telegram_api_id={shlex.quote(TELEGRAM_API_ID)}",
-            f"--telegram_radarr_chat_id={shlex.quote(TELEGRAM_RADARR_CHAT_ID)}",
-            f"--file_name={shlex.quote(movie_file_name)}",
-            f"--file_path={shlex.quote(local_movie_file_path)}",
+            f"--telegram_radarr_chat_id={TELEGRAM_SONARR_CHAT_ID}",
+            f"--file_name={shlex.quote(tvshow_file_name)}",
+            f"--file_path={shlex.quote(local_tvshow_file_path)}",
             f"--file_caption_type={shlex.quote(TELEGRAMARR_FILE_CAPTION_CONTENT)}",
-            f"--delay_time={shlex.quote(str(TELEGRAMARR_DELAY_TIME))}",
+            f"--delay_time={TELEGRAMARR_DELAY_TIME}",
         ]
         
         # Run the command in the background
