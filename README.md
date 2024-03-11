@@ -27,4 +27,5 @@ Follow these steps to install and configure Telegramarr:
 
 5. Verify that Telegramarr is running by navigating to `http://<your-ip>:8000/` in your web browser. You should see a message that says "Hello: Telegramarr". 
 6. In your Radarr settings, navigate to `Connect > Add New > Webhook`. Add the URL `http://<your-ip>:8000/get-from-radarr` and select only the "On Import" and "On Upgrade" events.
-7. Happy TelegramArring!
+7. Similarly for sonarr, Add the URL `http://<your-ip>:8000/get-from-sonarr` and select only the "On Import" and "On Upgrade" events.
+8. Happy TelegramArring!
