@@ -20,12 +20,13 @@ Follow these steps to install and configure Telegramarr:
      -p 8000:8000 \
      -v "<path-to-your-telegramarr-config-folder>":/app/src/config \
      -v "<path-to-a-temp-cache-folder>":/app/temp \         # optional but recommended
-     -v "<path-to-your-movies-folder>":/app/movies:ro \
-     -v "<path-to-your-tvshows-folder>":/app/tvshows:ro \
+     -v "<path-to-your-movies-folder>":/app/movies:ro,shared \
+     -v "<path-to-your-tvshows-folder>":/app/tvshows:ro,shared \
      -d akhilrana/telegramarr 
     ```
 
-5. Verify that Telegramarr is running by navigating to `http://<your-ip>:8000/` in your web browser. You should see a message that says "Hello: Telegramarr". 
-6. In your Radarr settings, navigate to `Connect > Add New > Webhook`. Add the URL `http://<your-ip>:8000/get-from-radarr` and select only the "On Import" and "On Upgrade" events.
-7. Similarly for sonarr, Add the URL `http://<your-ip>:8000/get-from-sonarr` and select only the "On Import" and "On Upgrade" events.
-8. Happy TelegramArring!
+5. If using docker for radarr/sonarr, make sure the media folders in sonarr/radarr are mounted with `:shared` volume propagation.
+6. Verify that Telegramarr is running by navigating to `http://<your-ip>:8000/` in your web browser. You should see a message that says "Hello: Telegramarr". 
+7. In your Radarr settings, navigate to `Connect > Add New > Webhook`. Add the URL `http://<your-ip>:8000/get-from-radarr` and select only the "On Import" and "On Upgrade" events.
+8. Similarly for sonarr, Add the URL `http://<your-ip>:8000/get-from-sonarr` and select only the "On Import" and "On Upgrade" events.
+9. Happy TelegramArring!
