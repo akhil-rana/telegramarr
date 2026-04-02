@@ -1,32 +1,55 @@
 # Telegramarr
 
-Telegramarr is an automated Telegram bot designed to work with Radarr/Sonarr. It listens for webhooks and sends a movie/show file to a specified Telegram group or chat when a movie is successfully downloaded and added to the library.
+Telegram file upload manager for Radarr/Sonarr with authentication.
+
+## Quick Start
+
+### Run Backend
+```bash
+./dev.sh
+```
+
+Visit: http://localhost:8080
+
+### Frontend Development (Optional - if npm works)
+In another terminal:
+```bash
+cd ui && npm run dev
+```
+
+Then visit: http://localhost:5173
+
+## Build for Production
+
+```bash
+./build.sh
+```
+
+Then run:
+```bash
+cd src && ./telegramarr
+```
+
+## Configuration
+
+Edit `src/config.yaml` to change channel ID and other settings.
 
 ## Features
-- Sends a media file to a specified Telegram group or chat when a movie is successfully downloaded and added to the Radarr/Sonarr library. 
-- Splits the file into multiple 7z archives and sends them to Telegram to bypass the 2GB file size limit.
 
-## Installation
+- ✓ QR code authentication
+- ✓ Phone number + SMS authentication  
+- ✓ 2FA support
+- ✓ Session persistence
+- ✓ Beautiful web UI
+- ✓ Simple logout button
+- ✓ No database required
 
-Follow these steps to install and configure Telegramarr:
+## API Endpoints
 
-1. Create a new folder, for example, `telegramarr-config`, in your desired location.
-2. Create a new bot using BotFather and obtain the bot token. Add the bot to your group or chat.
-3. Create a new file `env.py` in the `telegramarr-config` folder and copy the content from [here](https://raw.githubusercontent.com/akhil-rana/telegramarr/main/src/config/example.env.py) to that file. Replace the sample values with your actual values.
-4. To run Telegramarr, use the following Docker command:
+- `GET /api/auth/status` - Check auth status
+- `POST /api/auth/init` - Start auth (QR code)
+- `POST /api/auth/phone` - Send SMS code
+- `POST /api/auth/code` - Submit code
+- `POST /api/auth/2fa` - Submit 2FA password
+- `POST /api/auth/logout` - Logout
 
-    ```bash
-    docker run --name=telegramarr \
-     -p 8000:8000 \
-     -v "<path-to-your-telegramarr-config-folder>":/app/src/config \
-     -v "<path-to-a-temp-cache-folder>":/app/temp \         # optional but recommended
-     -v "<path-to-your-movies-folder>":/app/movies:ro,shared \
-     -v "<path-to-your-tvshows-folder>":/app/tvshows:ro,shared \
-     -d akhilrana/telegramarr 
-    ```
-
-5. If using docker for radarr/sonarr, make sure the media folders in sonarr/radarr are mounted with `:shared` volume propagation.
-6. Verify that Telegramarr is running by navigating to `http://<your-ip>:8000/` in your web browser. You should see a message that says "Hello: Telegramarr". 
-7. In your Radarr settings, navigate to `Connect > Add New > Webhook`. Add the URL `http://<your-ip>:8000/get-from-radarr` and select only the "On Import" and "On Upgrade" events.
-8. Similarly for sonarr, Add the URL `http://<your-ip>:8000/get-from-sonarr` and select only the "On Import" and "On Upgrade" events.
-9. Happy TelegramArring!

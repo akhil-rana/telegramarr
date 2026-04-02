@@ -1,0 +1,145 @@
+.logged-in {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.logged-in-container {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.logged-in-card {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  padding: 60px 40px;
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+}
+
+.user-icon {
+  font-size: 64px;
+  margin-bottom: 24px;
+  animation: popIn 0.5s ease-out;
+}
+
+.logged-in-title {
+  font-size: 32px;
+  font-weight: bold;
+  color: #333;
+  margin: 0 0 24px 0;
+}
+
+.user-info {
+  background: #f9f9f9;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 28px;
+  border: 2px solid #f0f0f0;
+}
+
+.info-label {
+  font-size: 13px;
+  color: #999;
+  margin: 0 0 8px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.username {
+  font-size: 20px;
+  font-weight: 700;
+  color: #667eea;
+  margin: 0;
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.display-name {
+  font-size: 14px;
+  color: #666;
+  margin: 8px 0 0 0;
+}
+
+.btn-logout {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 12px;
+}
+
+.btn-logout:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+}
+
+.btn-logout:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-logout:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-test-upload {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 12px;
+}
+
+.btn-test-upload:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 20px rgba(17, 153, 142, 0.4);
+}
+
+.btn-test-upload:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-test-upload:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.footer-text {
+  font-size: 13px;
+  color: #999;
+  margin: 0;
+  padding: 16px 0 0 0;
+  border-top: 1px solid #f0f0f0;
+}
+
+@keyframes popIn {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

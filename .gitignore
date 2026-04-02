@@ -1,3 +1,6 @@
+
+# Python backup
+src-old/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -166,3 +169,8 @@ env.py
 /temp
 *.session*
 *.json
+teldrive/
+build/
+test/
+telegramarr
+config.yaml

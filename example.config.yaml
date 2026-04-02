@@ -1,0 +1,19 @@
+telegram:
+  app_id: 2040
+  app_hash: "b18441a1ff607e10a989891a5462e627"
+  channel_id: 00000000000
+  device_model: "Desktop"
+  system_version: "Windows 11"
+  app_version: "6.7.0"
+  lang_pack: "tdesktop"
+  system_lang_code: "en-US"
+  lang_code: "en"
+
+server:
+  port: 8080
+  host: 0.0.0.0
+
+logging:
+  level: info
+  format: json
+
