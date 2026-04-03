@@ -713,7 +713,7 @@ func (s *Server) processTestUpload(filePath string) {
 
 	// Send initial message to channel
 	fileName := filepath.Base(filePath)
-	startMsg := fmt.Sprintf("🎬 **Upload Started**\nFile: %s\nPremium: %v\nPreparing ZIP parts...", fileName, isPremium)
+	startMsg := fmt.Sprintf("🎬 **Upload Started**\nFile: %s\nPremium: %v\nPreparing RAR parts...", fileName, isPremium)
 
 	s.logger.Info("Sending initial message to channel", zap.String("message", startMsg))
 	msgID, err := messenger.SendMessage(ctx, startMsg)
@@ -724,8 +724,8 @@ func (s *Server) processTestUpload(filePath string) {
 
 	s.logger.Info("Initial message sent to channel", zap.Int("msg_id", msgID))
 
-	// Create ZIP splitter
-	zipSplitter := uploader.NewZipSplitter(s.logger)
+	// Create RAR splitter
+	rarSplitter := uploader.NewRarSplitter(s.logger)
 
 	// Determine part size based on premium status
 	partSize := uploader.NonPremiumMaxSize
@@ -733,133 +733,96 @@ func (s *Server) processTestUpload(filePath string) {
 		partSize = uploader.PremiumMaxSize
 	}
 
-	// Create temp directory for ZIP files at project root if it doesn't exist
-	tempZipDir := filepath.Join(".", "temp")
-	if err := os.MkdirAll(tempZipDir, 0755); err != nil {
-		s.logger.Error("Failed to create temp ZIP directory", zap.Error(err))
+	// Create temp directory for RAR files at project root if it doesn't exist
+	tempRarDir := filepath.Join(".", "temp")
+	if err := os.MkdirAll(tempRarDir, 0755); err != nil {
+		s.logger.Error("Failed to create temp RAR directory", zap.Error(err))
 		updateMsg := fmt.Sprintf("❌ Error creating temp directory: %v", err)
 		messenger.UpdateMessage(ctx, msgID, updateMsg)
 		return
 	}
 
-	s.logger.Info("Starting ZIP split", zap.String("file", filePath), zap.Int64("part_size", partSize))
+	s.logger.Info("Starting RAR split", zap.String("file", filePath), zap.Int64("part_size", partSize))
 
 	// Track last update time for progress messages (update every 2 seconds)
 	lastUpdateTime := time.Now()
 	lastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
-	var zipStatusMsgID int
-	initialMsgDeleted := false
-	var lastZipProgressMsg string
+	var lastRarProgressMsg string
 
-	zipParts, err := zipSplitter.SplitFile(filePath, tempZipDir, partSize, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
+	rarParts, err := rarSplitter.SplitFile(filePath, tempRarDir, partSize, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
 		// Only log periodically (every 10%) to avoid flooding logs
 		if percent%10 == 0 {
-			s.logger.Debug("ZIP split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
+			s.logger.Debug("RAR split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
 		}
 
 		// Log at Info level only every 5 seconds (not on every callback)
 		now := time.Now()
 		if now.Sub(lastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
-			s.logger.Info("ZIP split in progress", zap.Int("percent", percent), zap.Int64("bytes", bytesProcessed))
+			s.logger.Info("RAR split in progress", zap.Int("percent", percent), zap.Int64("bytes", bytesProcessed))
 			lastInfoLogTime = now
 		}
 
 		// Edit status message every 2 seconds or at completion
 		if now.Sub(lastUpdateTime) >= 2*time.Second || percent == 100 {
 			lastUpdateTime = now
-			progressMsg := fmt.Sprintf("🎬 **Preparing ZIP Parts**\nFile: %s\nProgress: %d%%\nBytes: %.1f MB / %.1f MB", fileName, percent, float64(bytesProcessed)/1024/1024, float64(totalBytes)/1024/1024)
+			progressMsg := fmt.Sprintf("🎬 **Preparing RAR Parts**\nFile: %s\nProgress: %d%%\nBytes: %.1f MB / %.1f MB", fileName, percent, float64(bytesProcessed)/1024/1024, float64(totalBytes)/1024/1024)
 
 			// Only update if message content actually changed
-			if progressMsg == lastZipProgressMsg && zipStatusMsgID > 0 {
+			if progressMsg == lastRarProgressMsg {
 				// Message content is the same, skip update to avoid MESSAGE_NOT_MODIFIED error
 				return
 			}
-			lastZipProgressMsg = progressMsg
+			lastRarProgressMsg = progressMsg
 
-			// If no status message exists yet, delete initial message and send new one
-			if zipStatusMsgID == 0 {
-				// Delete initial "Upload Started" message on first progress update
-				if !initialMsgDeleted && msgID > 0 {
-					if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
-						s.logger.Warn("Failed to delete initial message during ZIP progress", zap.Error(err), zap.Int("msg_id", msgID))
-					} else {
-						s.logger.Info("Initial message deleted", zap.Int("msg_id", msgID))
-					}
-					initialMsgDeleted = true
-				}
-
-				newMsgID, err := messenger.SendMessage(context.Background(), progressMsg)
-				if err != nil {
-					s.logger.Error("Failed to send ZIP status message", zap.Error(err))
-					return
-				}
-				zipStatusMsgID = newMsgID
-				s.logger.Info("ZIP status message sent", zap.Int("msg_id", zipStatusMsgID))
-			} else {
-				err := messenger.UpdateMessage(context.Background(), zipStatusMsgID, progressMsg)
-				if err != nil {
-					s.logger.Error("Failed to update ZIP status message", zap.Error(err), zap.Int("msg_id", zipStatusMsgID))
-					// If update fails, send new message
-					newMsgID, sendErr := messenger.SendMessage(context.Background(), progressMsg)
-					if sendErr == nil {
-						zipStatusMsgID = newMsgID
-					}
-					return
-				}
-				s.logger.Info("ZIP status message edited", zap.Int("msg_id", zipStatusMsgID))
+			// Always edit the initial message (msgID was sent at the start)
+			err := messenger.UpdateMessage(context.Background(), msgID, progressMsg)
+			if err != nil {
+				s.logger.Error("Failed to update RAR status message", zap.Error(err), zap.Int("msg_id", msgID))
+				return
 			}
+			s.logger.Info("RAR status message edited", zap.Int("msg_id", msgID))
 		}
 	})
 	if err != nil {
-		s.logger.Error("Failed to split file into ZIP parts", zap.Error(err))
-		// Delete initial and ZIP status messages on error
+		s.logger.Error("Failed to split file into RAR parts", zap.Error(err))
+		// Delete initial message on error
 		if msgID > 0 {
 			if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
 				s.logger.Warn("Failed to delete initial message on error", zap.Error(err), zap.Int("msg_id", msgID))
 			}
 		}
-		if zipStatusMsgID > 0 {
-			if err := messenger.DeleteMessage(context.Background(), zipStatusMsgID); err != nil {
-				s.logger.Warn("Failed to delete ZIP status message on error", zap.Error(err), zap.Int("msg_id", zipStatusMsgID))
-			}
-		}
-		errorMsg := fmt.Sprintf("❌ Error creating ZIP parts: %v", err)
+		errorMsg := fmt.Sprintf("❌ Error creating RAR parts: %v", err)
 		messenger.SendMessage(ctx, errorMsg)
 		return
 	}
 
-	// Delete ZIP status message after ZIP is done (and initial message if not already deleted)
-	if msgID > 0 && !initialMsgDeleted {
+	// Delete initial message after RAR is done
+	if msgID > 0 {
 		if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
 			s.logger.Warn("Failed to delete initial message", zap.Error(err), zap.Int("msg_id", msgID))
 		}
 	}
-	if zipStatusMsgID > 0 {
-		if err := messenger.DeleteMessage(context.Background(), zipStatusMsgID); err != nil {
-			s.logger.Warn("Failed to delete ZIP status message", zap.Error(err), zap.Int("msg_id", zipStatusMsgID))
-		}
-	}
 
-	s.logger.Info("ZIP split complete", zap.Int("parts", len(zipParts)))
+	s.logger.Info("RAR split complete", zap.Int("parts", len(rarParts)))
 
 	// Create telegram uploader for sending files
 	telegramUploader := uploader.NewTelegramUploader(telegramClient, s.config.Telegram.ChannelID, s.logger, &s.config.Telegram, uploadPool)
 	s.logger.Info("Telegram uploader created")
 
-	// Upload each ZIP part sequentially to Telegram channel
+	// Upload each RAR part sequentially to Telegram channel
 	uploadedParts := 0
 
-	for i, zipFilePath := range zipParts {
+	for i, rarFilePath := range rarParts {
 		partNum := i + 1
-		zipFileInfo, err := os.Stat(zipFilePath)
+		zipFileInfo, err := os.Stat(rarFilePath)
 		if err != nil {
-			s.logger.Error("Failed to stat ZIP file", zap.String("file", zipFilePath), zap.Error(err))
+			s.logger.Error("Failed to stat RAR file", zap.String("file", rarFilePath), zap.Error(err))
 			continue
 		}
 
-		s.logger.Info("Uploading ZIP part", zap.Int("number", partNum), zap.Int("total", len(zipParts)), zap.Int64("size", zipFileInfo.Size()))
+		s.logger.Info("Uploading RAR part", zap.Int("number", partNum), zap.Int("total", len(rarParts)), zap.Int64("size", zipFileInfo.Size()))
 
-		zipFileName := filepath.Base(zipFilePath)
+		rarFileName := filepath.Base(rarFilePath)
 
 		// Use context.Background() with timeout
 		uploadCtx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
@@ -870,11 +833,11 @@ func (s *Server) processTestUpload(filePath string) {
 		var partStatusMsgID int
 		var lastPartProgressMsg string
 
-		_, err = telegramUploader.UploadToChannel(uploadCtx, zipFilePath, zipFileName, func(current, total int64, percent int) {
+		_, err = telegramUploader.UploadToChannel(uploadCtx, rarFilePath, rarFileName, func(current, total int64, percent int) {
 			// Calculate overall progress
 			totalSize := int64(0)
-			for _, zipPath := range zipParts {
-				info, _ := os.Stat(zipPath)
+			for _, rarPath := range rarParts {
+				info, _ := os.Stat(rarPath)
 				if info != nil {
 					totalSize += info.Size()
 				}
@@ -882,7 +845,7 @@ func (s *Server) processTestUpload(filePath string) {
 
 			totalUploadedSoFar := int64(0)
 			for j := 0; j < i; j++ {
-				info, _ := os.Stat(zipParts[j])
+				info, _ := os.Stat(rarParts[j])
 				if info != nil {
 					totalUploadedSoFar += info.Size()
 				}
@@ -904,7 +867,7 @@ func (s *Server) processTestUpload(filePath string) {
 			}
 			if now.Sub(partLastUpdateTime) >= 2*time.Second || percent == 100 {
 				partLastUpdateTime = now
-				partProgressMsg := fmt.Sprintf("📤 **Uploading Part %d of %d**\nFile: %s\nPart Progress: %d%%\nOverall Progress: %d%%", partNum, len(zipParts), zipFileName, percent, overallPercent)
+				partProgressMsg := fmt.Sprintf("📤 **Uploading Part %d of %d**\nFile: %s\nPart Progress: %d%%\nOverall Progress: %d%%", partNum, len(rarParts), rarFileName, percent, overallPercent)
 
 				// Only update if message content actually changed
 				if partProgressMsg == lastPartProgressMsg && partStatusMsgID > 0 {
@@ -941,7 +904,7 @@ func (s *Server) processTestUpload(filePath string) {
 		cancel()
 
 		if err != nil {
-			s.logger.Error("Failed to upload ZIP part", zap.Error(err), zap.Int("number", partNum))
+			s.logger.Error("Failed to upload RAR part", zap.Error(err), zap.Int("number", partNum))
 			// Delete upload message on error
 			if partStatusMsgID > 0 {
 				deleteErr := messenger.DeleteMessage(context.Background(), partStatusMsgID)
@@ -957,7 +920,7 @@ func (s *Server) processTestUpload(filePath string) {
 		}
 
 		uploadedParts++
-		s.logger.Debug("ZIP part upload complete", zap.Int("number", partNum))
+		s.logger.Debug("RAR part upload complete", zap.Int("number", partNum))
 
 		// Delete the upload message when complete (don't keep old messages)
 		if partStatusMsgID > 0 {
@@ -973,14 +936,9 @@ func (s *Server) processTestUpload(filePath string) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Cleanup ZIP files
-	zipSplitter.CleanupZipFiles(zipParts)
-	s.logger.Info("ZIP files cleaned up")
-
-	// Delete initial message when upload is complete (if not already deleted)
-	if msgID > 0 && !initialMsgDeleted {
-		messenger.DeleteMessage(context.Background(), msgID)
-	}
+	// Cleanup RAR files
+	rarSplitter.CleanupRarFiles(rarParts)
+	s.logger.Info("RAR files cleaned up")
 
 	s.logger.Info("Test upload complete", zap.String("file", filePath))
 }
