@@ -63,6 +63,14 @@ func CreateClientFromSession(ctx context.Context, appID int, appHash string, ses
 		telegram.Options{
 			SessionStorage: memStorage,
 			Middlewares:    middlewares,
+			Device: telegram.DeviceConfig{
+				DeviceModel:    cfg.DeviceModel,
+				SystemVersion:  cfg.SystemVersion,
+				AppVersion:     cfg.AppVersion,
+				SystemLangCode: cfg.SystemLangCode,
+				LangPack:       cfg.LangPack,
+				LangCode:       cfg.LangCode,
+			},
 		},
 	)
 

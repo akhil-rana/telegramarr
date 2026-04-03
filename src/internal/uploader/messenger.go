@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 
 	"github.com/gotd/td/telegram"
@@ -35,12 +36,15 @@ func NewChannelMessenger(client *telegram.Client, channelID int64, logger *zap.L
 	}
 }
 
-// SendMessage sends a text message to the channel
+// SendMessage sends a text message to the channel with HTML formatting support
 func (cm *ChannelMessenger) SendMessage(ctx context.Context, text string) (int, error) {
 	if cm.client == nil {
 		cm.logger.Error("Client is nil, cannot send message")
 		return 0, fmt.Errorf("client is nil")
 	}
+
+	// Strip HTML tags and get entities
+	cleanedText, entities := stripHTMLAndParseEntities(text)
 
 	// Fetch AccessHash if not already done
 	var err error
@@ -63,13 +67,15 @@ func (cm *ChannelMessenger) SendMessage(ctx context.Context, text string) (int, 
 	apiClient := cm.getAPIClient(ctx)
 
 	result, err := apiClient.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
-		Peer:     inputPeer,
-		Message:  text,
-		RandomID: generateRandomID(),
+		Peer:      inputPeer,
+		Message:   cleanedText,
+		RandomID:  generateRandomID(),
+		NoWebpage: true,
+		Entities:  entities,
 	})
 
 	if err != nil {
-		cm.logger.Error("Failed to send message", zap.Error(err), zap.String("text", text[:min(len(text), 50)]))
+		cm.logger.Error("Failed to send message", zap.Error(err), zap.String("text", cleanedText[:min(len(cleanedText), 50)]))
 		return 0, fmt.Errorf("failed to send message: %w", err)
 	}
 
@@ -91,7 +97,7 @@ func (cm *ChannelMessenger) SendMessage(ctx context.Context, text string) (int, 
 	return msgID, nil
 }
 
-// UpdateMessage edits an existing message
+// UpdateMessage edits an existing message with HTML formatting support
 func (cm *ChannelMessenger) UpdateMessage(ctx context.Context, msgID int, text string) error {
 	// If msgID is 0, we can't edit - just log and return error
 	if msgID == 0 {
@@ -103,6 +109,9 @@ func (cm *ChannelMessenger) UpdateMessage(ctx context.Context, msgID int, text s
 		cm.logger.Error("Client is nil, cannot update message")
 		return fmt.Errorf("client is nil")
 	}
+
+	// Strip HTML tags and get entities
+	cleanedText, entities := stripHTMLAndParseEntities(text)
 
 	// Fetch AccessHash if not already done
 	var err error
@@ -123,9 +132,11 @@ func (cm *ChannelMessenger) UpdateMessage(ctx context.Context, msgID int, text s
 	apiClient := cm.getAPIClient(ctx)
 
 	_, err = apiClient.MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
-		Peer:    inputPeer,
-		ID:      msgID,
-		Message: text,
+		Peer:      inputPeer,
+		ID:        msgID,
+		Message:   cleanedText,
+		Entities:  entities,
+		NoWebpage: true,
 	})
 
 	if err != nil {
@@ -281,4 +292,154 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// stripHTMLAndParseEntities strips HTML tags from text and returns both cleaned text and entities
+// Supports: <b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strike</s>, <code>code</code>
+// Important: Uses UTF-16 offsets as required by Telegram API
+func stripHTMLAndParseEntities(text string) (string, []tg.MessageEntityClass) {
+	var entities []tg.MessageEntityClass
+
+	type openTag struct {
+		name   string
+		offset int // UTF-16 offset
+	}
+
+	// Stack to track open tags
+	stack := []openTag{}
+
+	// Build cleaned text and track entities
+	var cleanText strings.Builder
+	utf16Offset := 0
+
+	runes := []rune(text) // Convert to runes to properly handle multi-byte UTF-8 characters
+	for i := 0; i < len(runes); i++ {
+		char := runes[i]
+
+		// Check for tag start
+		if char == '<' {
+			// Find closing >
+			closeIdx := -1
+			for j := i + 1; j < len(runes); j++ {
+				if runes[j] == '>' {
+					closeIdx = j
+					break
+				}
+			}
+
+			if closeIdx == -1 {
+				// No closing >, treat < as regular character
+				cleanText.WriteRune(char)
+				utf16Offset += countUTF16(string(char))
+				continue
+			}
+
+			// Extract tag content
+			tagContent := string(runes[i+1 : closeIdx])
+
+			// Check if closing tag
+			if strings.HasPrefix(tagContent, "/") {
+				tagName := strings.TrimPrefix(tagContent, "/")
+				tagName = strings.TrimSpace(tagName)
+
+				// Find matching opening tag (last one on stack with this name)
+				for j := len(stack) - 1; j >= 0; j-- {
+					if stack[j].name == tagName {
+						// Create entity
+						startOffset := stack[j].offset
+						length := utf16Offset - startOffset
+
+						var entity tg.MessageEntityClass
+						switch tagName {
+						case "b":
+							entity = &tg.MessageEntityBold{
+								Offset: startOffset,
+								Length: length,
+							}
+						case "i":
+							entity = &tg.MessageEntityItalic{
+								Offset: startOffset,
+								Length: length,
+							}
+						case "u":
+							entity = &tg.MessageEntityUnderline{
+								Offset: startOffset,
+								Length: length,
+							}
+						case "s":
+							entity = &tg.MessageEntityStrike{
+								Offset: startOffset,
+								Length: length,
+							}
+						case "code":
+							entity = &tg.MessageEntityCode{
+								Offset: startOffset,
+								Length: length,
+							}
+						}
+
+						if entity != nil {
+							entities = append(entities, entity)
+						}
+
+						// Remove from stack
+						stack = append(stack[:j], stack[j+1:]...)
+						break
+					}
+				}
+
+				// Skip to after the closing tag
+				i = closeIdx
+				continue
+			}
+
+			// Opening tag - extract tag name (everything before first space)
+			tagName := tagContent
+			if spaceIdx := strings.IndexAny(tagContent, " \t"); spaceIdx >= 0 {
+				tagName = tagContent[:spaceIdx]
+			}
+
+			switch tagName {
+			case "b", "i", "u", "s", "code":
+				stack = append(stack, openTag{name: tagName, offset: utf16Offset})
+			}
+
+			// Skip to after the closing tag
+			i = closeIdx
+			continue
+		}
+
+		// Regular character - add to clean text
+		cleanText.WriteRune(char)
+		utf16Offset += countUTF16(string(char))
+	}
+
+	return cleanText.String(), entities
+}
+
+// countUTF16 counts the number of UTF-16 code units in a string
+// Most characters are 1 code unit, but surrogate pairs (emoji, etc) are 2
+func countUTF16(s string) int {
+	count := 0
+	for _, r := range s {
+		if r > 0xFFFF {
+			// Surrogate pair - counts as 2 UTF-16 code units
+			count += 2
+		} else {
+			count += 1
+		}
+	}
+	return count
+}
+
+// utf16Len returns the UTF-16 length of a character (legacy, use countUTF16)
+func utf16Len(char string) int {
+	return countUTF16(char)
+}
+
+// parseHTMLEntities is a legacy wrapper that only returns entities
+// Use stripHTMLAndParseEntities instead for the cleaned text
+func parseHTMLEntities(text string) []tg.MessageEntityClass {
+	_, entities := stripHTMLAndParseEntities(text)
+	return entities
 }

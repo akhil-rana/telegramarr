@@ -263,14 +263,29 @@ func (rs *RarSplitter) checkExistingRarParts(outputDir string, baseName string, 
 	return existingParts
 }
 
-// CleanupRarFiles removes all RAR part files
+// CleanupRarFiles removes all RAR part files and their parent folder
 func (rs *RarSplitter) CleanupRarFiles(rarParts []string) {
+	if len(rarParts) == 0 {
+		return
+	}
+
+	// Get the parent directory of the first RAR file (all should be in same folder)
+	parentDir := filepath.Dir(rarParts[0])
+
+	// Remove individual RAR files first
 	for _, rarFile := range rarParts {
 		if err := os.Remove(rarFile); err != nil {
 			rs.logger.Warn("Failed to remove RAR file", zap.String("file", rarFile), zap.Error(err))
 		} else {
 			rs.logger.Debug("Removed RAR file", zap.String("file", rarFile))
 		}
+	}
+
+	// Remove the parent folder
+	if err := os.RemoveAll(parentDir); err != nil {
+		rs.logger.Warn("Failed to remove RAR folder", zap.String("folder", parentDir), zap.Error(err))
+	} else {
+		rs.logger.Debug("Removed RAR folder", zap.String("folder", parentDir))
 	}
 }
 

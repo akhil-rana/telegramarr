@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/akhil-rana/telegramarr/internal/auth"
@@ -18,6 +19,7 @@ import (
 	"github.com/akhil-rana/telegramarr/internal/pool"
 	tgc "github.com/akhil-rana/telegramarr/internal/telegram"
 	"github.com/akhil-rana/telegramarr/internal/uploader"
+	"github.com/akhil-rana/telegramarr/internal/webhook"
 	"github.com/gin-gonic/gin"
 	"github.com/go-faster/errors"
 	"github.com/gorilla/websocket"
@@ -121,7 +123,6 @@ func (s *Server) setupRoutes() {
 	{
 		webhooks.POST("/radarr", s.RadarrWebhook)
 		webhooks.POST("/sonarr", s.SonarrWebhook)
-		webhooks.POST("/test-upload", s.TestUploadWebhook)
 	}
 
 	// Serve React app (catch-all for frontend routing)
@@ -572,130 +573,438 @@ func (s *Server) GetSettings(c *gin.Context) {
 }
 
 func (s *Server) RadarrWebhook(c *gin.Context) {
-	c.JSON(202, gin.H{"message": "Queued for processing"})
+	var payload webhook.RadarrWebhookPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		s.logger.Error("Failed to parse Radarr webhook", zap.Error(err))
+		c.JSON(400, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	// Validate payload
+	if !webhook.ValidateRadarrPayload(&payload) {
+		s.logger.Warn("Invalid Radarr payload - missing required fields")
+		c.JSON(400, gin.H{"error": "invalid or missing required fields"})
+		return
+	}
+
+	s.logger.Info("Radarr webhook received",
+		zap.String("movie", payload.Movie.Title),
+		zap.Int("year", payload.Movie.Year),
+		zap.String("imdbId", payload.Movie.ImdbID),
+		zap.Int("tmdbId", payload.Movie.TmdbID))
+
+	// Process webhook asynchronously
+	go s.processRadarrWebhook(&payload)
+
+	c.JSON(202, gin.H{
+		"message": "Radarr webhook queued for processing",
+		"movie":   payload.Movie.Title,
+		"status":  "processing",
+	})
 }
 
 func (s *Server) SonarrWebhook(c *gin.Context) {
-	c.JSON(202, gin.H{"message": "Queued for processing"})
+	var payload webhook.SonarrWebhookPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		s.logger.Error("Failed to parse Sonarr webhook", zap.Error(err))
+		c.JSON(400, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	// Validate payload
+	if !webhook.ValidateSonarrPayload(&payload) {
+		s.logger.Warn("Invalid Sonarr payload - missing required fields")
+		c.JSON(400, gin.H{"error": "invalid or missing required fields"})
+		return
+	}
+
+	s.logger.Info("Sonarr webhook received",
+		zap.String("series", payload.Series.Title),
+		zap.Int("year", payload.Series.Year),
+		zap.String("imdbId", payload.Series.ImdbID),
+		zap.Int("tvdbId", payload.Series.TvdbID))
+
+	// Process webhook asynchronously
+	go s.processSonarrWebhook(&payload)
+
+	c.JSON(202, gin.H{
+		"message": "Sonarr webhook queued for processing",
+		"series":  payload.Series.Title,
+		"status":  "processing",
+	})
+}
+
+// Helper functions for formatting messages
+
+// formatProgressBar creates a visual progress bar
+func formatProgressBar(percent int) string {
+	const totalBars = 15
+	filled := (percent * totalBars) / 100
+	empty := totalBars - filled
+
+	var bar strings.Builder
+	for i := 0; i < filled; i++ {
+		bar.WriteString("█")
+	}
+	for i := 0; i < empty; i++ {
+		bar.WriteString("░")
+	}
+	return bar.String()
+}
+
+// formatBytes converts bytes to human readable format (MB/GB)
+func formatBytes(bytes int64) string {
+	const mb = 1024 * 1024
+	const gb = mb * 1024
+
+	if bytes >= gb {
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(gb))
+	}
+	return fmt.Sprintf("%.1f MB", float64(bytes)/float64(mb))
+}
+
+// formatSpeed calculates and formats speed in MBps
+func formatSpeed(bytes int64, elapsed time.Duration) string {
+	if elapsed <= 0 {
+		return "0.0 MBps"
+	}
+	mbps := float64(bytes) / (1024 * 1024) / elapsed.Seconds()
+	return fmt.Sprintf("%.1f MBps", mbps)
+}
+
+// formatRARProgressMessage creates formatted RAR splitting message
+func formatRARProgressMessage(fileName string, source string, title string, percent int, bytesProcessed int64, totalBytes int64) string {
+	bar := formatProgressBar(percent)
+	currentMB := formatBytes(bytesProcessed)
+	totalMB := formatBytes(totalBytes)
+
+	return fmt.Sprintf(
+		"<b>📦 %s Webhook Upload</b>\n"+
+			"\n"+
+			"<b>Title:</b> %s\n"+
+			"<b>File:</b> <b><code>%s</code></b>\n"+
+			"\n"+
+			"<b>Preparing RAR Parts</b>\n"+
+			"%s %d%%\n"+
+			"\n"+
+			"<b>Progress:</b> %s / %s",
+		strings.ToUpper(source), title, fileName, bar, percent, currentMB, totalMB,
+	)
+}
+
+// formatUploadProgressMessage creates formatted upload message with speed
+func formatUploadProgressMessage(fileNum int, totalFiles int, source string, title string, fileName string, percent int, current int64, total int64, elapsed time.Duration) string {
+	bar := formatProgressBar(percent)
+	currentMB := formatBytes(current)
+	totalMB := formatBytes(total)
+	speed := formatSpeed(current, elapsed)
+
+	// Calculate ETA
+	var eta string
+	if current > 0 && elapsed > 0 {
+		totalSeconds := float64(total) * elapsed.Seconds() / float64(current)
+		remainingSeconds := totalSeconds - elapsed.Seconds()
+		if remainingSeconds > 0 {
+			eta = fmt.Sprintf("ETA: %dm%ds", int(remainingSeconds)/60, int(remainingSeconds)%60)
+		}
+	}
+
+	return fmt.Sprintf(
+		"📤 <b>Uploading Part %d of %d</b>\n"+
+			"\n"+
+			"<b>Source:</b> %s\n"+
+			"<b>Title:</b> %s\n"+
+			"<b>File:</b> <b><code>%s</code></b>\n"+
+			"\n"+
+			"%s %d%%\n"+
+			"\n"+
+			"<b>Progress:</b> %s / %s\n"+
+			"<b>Speed:</b> %s\n"+
+			"<b>%s</b>",
+		fileNum, totalFiles, strings.ToUpper(source), title, fileName, bar, percent, currentMB, totalMB, speed, eta,
+	)
 }
 
 func (s *Server) ServeIndex(c *gin.Context) {
 	c.File("./src/ui/dist/index.html")
 }
 
-// TestUploadWebhook is a test endpoint for uploading a movie file from test/movies folder
-// Called from frontend when user clicks "Test Upload" button after authentication
-func (s *Server) TestUploadWebhook(c *gin.Context) {
-	if s.session == nil || !s.session.Authenticated {
-		c.JSON(401, gin.H{"error": "not authenticated"})
-		return
-	}
-
-	// Find first movie file in test/movies directory
-	testMoviesDir := "test/movies"
-	entries, err := os.ReadDir(testMoviesDir)
-	if err != nil {
-		s.logger.Error("Failed to read test movies directory", zap.Error(err), zap.String("path", testMoviesDir))
-		c.JSON(400, gin.H{"error": "test movies directory not found"})
-		return
-	}
-
-	var testFilePath string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			testFilePath = filepath.Join(testMoviesDir, entry.Name())
-			break
-		}
-	}
-
-	if testFilePath == "" {
-		s.logger.Error("No movie files found in test/movies directory")
-		c.JSON(400, gin.H{"error": "no movie files found in test/movies directory"})
-		return
-	}
-
-	// Verify file exists and is readable
-	if _, err := os.Stat(testFilePath); err != nil {
-		s.logger.Error("Test file not accessible", zap.Error(err), zap.String("path", testFilePath))
-		c.JSON(400, gin.H{"error": "test file not accessible"})
-		return
-	}
-
-	// Process upload asynchronously
-	go s.processTestUpload(testFilePath)
-
-	c.JSON(202, gin.H{
-		"message": "Upload started",
-		"status":  "processing",
-		"file":    testFilePath,
-	})
-}
-
-// processTestUpload handles the actual file upload with progress tracking in Telegram
-func (s *Server) processTestUpload(filePath string) {
+// processRadarrWebhook processes the Radarr webhook and uploads the movie file
+func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.Error("Upload goroutine panicked", zap.Any("panic", r))
+			s.logger.Error("Radarr webhook goroutine panicked", zap.Any("panic", r))
 		}
 	}()
 
 	ctx := context.Background()
 
-	s.logger.Info("Starting test upload", zap.String("file", filePath), zap.String("user", s.session.Username))
+	s.logger.Info("Processing Radarr webhook",
+		zap.String("movie", payload.Movie.Title),
+		zap.String("imdbId", payload.Movie.ImdbID),
+		zap.String("filePath", payload.MovieFile.Path))
 
-	// Check file exists
-	if _, err := os.Stat(filePath); err != nil {
-		s.logger.Error("Test file does not exist", zap.Error(err), zap.String("path", filePath))
+	// Verify file exists
+	if _, err := os.Stat(payload.MovieFile.Path); err != nil {
+		s.logger.Error("Radarr file does not exist", zap.Error(err), zap.String("path", payload.MovieFile.Path))
 		return
 	}
-	s.logger.Info("Test file found", zap.String("path", filePath))
 
-	isPremium := s.session != nil && s.session.Premium
-	s.logger.Info("Premium status", zap.Bool("isPremium", isPremium))
-
-	// Use the already-running client from ClientManager
-	// This is CRITICAL - the client must have client.Run() running in background
-	// to avoid "context cancelled" errors during long uploads
+	// Check if client is ready
 	if s.clientManager == nil || s.tgClient == nil {
-		s.logger.Error("Telegram client not initialized - cannot upload")
+		s.logger.Error("Telegram client not initialized - cannot upload Radarr webhook")
 		return
 	}
 
-	// Ensure client is connected
 	if !s.clientManager.IsConnected() {
 		s.logger.Error("Telegram client is not connected")
 		return
 	}
 
-	telegramClient := s.tgClient
-	s.logger.Info("Using existing Telegram client for upload")
+	// Process file upload
+	s.uploadWebhookFile(ctx, payload.MovieFile.Path, payload.Movie.Title, payload.Movie.ImdbID, payload.Movie.TmdbID, "radarr")
+}
 
-	// Run the client in a goroutine to keep it connected
-	clientCtx, clientCancel := context.WithCancel(context.Background())
-	defer clientCancel()
-
-	clientDone := make(chan error, 1)
-	go func() {
-		s.logger.Info("Starting telegram client runner")
-		err := telegramClient.Run(clientCtx, func(ctx context.Context) error {
-			s.logger.Info("Telegram client connected and ready")
-			<-ctx.Done()
-			return ctx.Err()
-		})
-		clientDone <- err
-		s.logger.Info("Telegram client runner finished", zap.Error(err))
+// processSonarrWebhook processes the Sonarr webhook and uploads the episode file
+func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("Sonarr webhook goroutine panicked", zap.Any("panic", r))
+		}
 	}()
 
-	// Give the client a moment to connect
-	time.Sleep(2 * time.Second)
+	ctx := context.Background()
 
-	// Create connection pool for messenger and uploader
+	s.logger.Info("Processing Sonarr webhook",
+		zap.String("series", payload.Series.Title),
+		zap.String("imdbId", payload.Series.ImdbID),
+		zap.Int("tvdbId", payload.Series.TvdbID),
+		zap.String("filePath", payload.EpisodeFile.Path))
+
+	// Verify file exists
+	if _, err := os.Stat(payload.EpisodeFile.Path); err != nil {
+		s.logger.Error("Sonarr file does not exist", zap.Error(err), zap.String("path", payload.EpisodeFile.Path))
+		return
+	}
+
+	// Check if client is ready
+	if s.clientManager == nil || s.tgClient == nil {
+		s.logger.Error("Telegram client not initialized - cannot upload Sonarr webhook")
+		return
+	}
+
+	if !s.clientManager.IsConnected() {
+		s.logger.Error("Telegram client is not connected")
+		return
+	}
+
+	// Process file upload
+	s.uploadWebhookFile(ctx, payload.EpisodeFile.Path, payload.Series.Title, payload.Series.ImdbID, payload.Series.TvdbID, "sonarr")
+}
+
+// uploadWebhookFile handles the common file upload logic for both Radarr and Sonarr webhooks
+func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title string, imdbIDOrTvdbString interface{}, tmdbIDOrTvdbInt interface{}, source string) {
+	// Check file exists
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		s.logger.Error("File does not exist", zap.Error(err), zap.String("path", filePath), zap.String("source", source))
+		return
+	}
+
+	fileSize := fileInfo.Size()
+	isPremium := s.session != nil && s.session.Premium
+
+	// Determine size limit based on premium status
+	var sizeLimit int64
+	if isPremium {
+		sizeLimit = 4000000000 // 4GB for premium
+	} else {
+		sizeLimit = 2000000000 // 2GB for free
+	}
+
+	// If file is smaller than limit, upload directly without RAR
+	if fileSize < sizeLimit {
+		s.uploadWebhookFileDirectly(ctx, filePath, title, source, fileSize)
+		return
+	}
+
+	// File is larger than limit, use RAR splitting
+	s.uploadWebhookFileWithRar(ctx, filePath, title, source, isPremium, sizeLimit)
+}
+
+// uploadWebhookFileDirectly uploads a file without RAR splitting
+func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string, title string, source string, fileSize int64) {
+	s.logger.Info("Uploading file directly (no RAR needed)", zap.String("file", filePath), zap.Int64("size", fileSize), zap.String("source", source))
+
+	isPremium := s.session != nil && s.session.Premium
+
+	// Use centralized upload mechanism
+	if err := s.uploadFilesToChannel(ctx, []string{filePath}, title, source, isPremium); err != nil {
+		s.logger.Error("File upload failed", zap.Error(err), zap.String("source", source))
+	}
+
+	s.logger.Info("Webhook file upload complete", zap.String("source", source), zap.String("title", title), zap.String("file", filepath.Base(filePath)))
+}
+
+// uploadWebhookFileWithRar uploads a large file using RAR splitting via centralized upload mechanism
+func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, title string, source string, isPremium bool, sizeLimit int64) {
+	// Create messenger for RAR progress updates
 	poolSize := int64(s.config.Telegram.PoolSize)
 	if poolSize < 1 {
 		poolSize = 8
 	}
 
-	// Create middleware chain for pool: FloodWait -> Recovery -> Retry -> RateLimit
+	middlewares := tgc.NewMiddleware(
+		&s.config.Telegram,
+		tgc.WithFloodWait(),
+		tgc.WithRecovery(ctx),
+		tgc.WithRetry(s.config.Telegram.MaxRetries),
+		tgc.WithRateLimit(),
+	)
+
+	uploadPool := pool.NewPool(s.tgClient, poolSize, s.logger, middlewares...)
+	defer uploadPool.Close()
+
+	messenger := uploader.NewChannelMessenger(s.tgClient, s.config.Telegram.ChannelID, s.logger, uploadPool)
+
+	// Send initial message
+	fileName := filepath.Base(filePath)
+	startMsg := fmt.Sprintf(
+		"<b>📦 %s Webhook Upload</b>\n\n"+
+			"<b>Title:</b> %s\n"+
+			"<b>File:</b> %s\n\n"+
+			"<b>Preparing RAR Parts...</b>",
+		strings.ToUpper(source), title, fileName,
+	)
+
+	s.logger.Info("Sending initial webhook message to channel", zap.String("title", title), zap.String("source", source))
+	msgID, err := messenger.SendMessage(ctx, startMsg)
+	if err != nil {
+		s.logger.Error("Failed to send initial webhook message", zap.Error(err), zap.String("source", source))
+		return
+	}
+
+	// Split file with progress callback
+	rarSplitter := uploader.NewRarSplitter(s.logger)
+
+	partSize := int64(4000) // 4000 MB for premium
+	if !isPremium {
+		partSize = 2000 // 2000 MB for free
+	}
+
+	tempRarDir := filepath.Join(".", "temp")
+	if err := os.MkdirAll(tempRarDir, 0755); err != nil {
+		s.logger.Error("Failed to create temp RAR directory", zap.Error(err))
+		updateMsg := fmt.Sprintf("❌ <b>Error creating temp directory:</b> %v", err)
+		messenger.UpdateMessage(ctx, msgID, updateMsg)
+		return
+	}
+
+	s.logger.Info("Starting RAR split for webhook", zap.String("file", filePath), zap.Int64("part_size", partSize), zap.String("source", source))
+
+	// Track last update time for progress messages (update every 2 seconds)
+	lastUpdateTime := time.Now()
+	lastInfoLogTime := time.Now()
+	var lastRarProgressMsg string
+
+	// Split file with progress callback for Telegram updates
+	rarParts, err := rarSplitter.SplitFile(filePath, tempRarDir, partSize, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
+		// Only log periodically (every 10%) to avoid flooding logs
+		if percent%10 == 0 {
+			s.logger.Debug("Webhook RAR split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
+		}
+
+		// Log at Info level only every 5 seconds (not on every callback)
+		now := time.Now()
+		if now.Sub(lastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
+			s.logger.Info("Webhook RAR split in progress", zap.Int("percent", percent), zap.Int64("bytes", bytesProcessed), zap.String("source", source))
+			lastInfoLogTime = now
+		}
+
+		// Edit status message every 2 seconds or at completion
+		if now.Sub(lastUpdateTime) >= 2*time.Second || percent == 100 {
+			lastUpdateTime = now
+			progressMsg := formatRARProgressMessage(fileName, source, title, percent, bytesProcessed, totalBytes)
+
+			// Only update if message content actually changed
+			if progressMsg == lastRarProgressMsg {
+				return
+			}
+			lastRarProgressMsg = progressMsg
+
+			// Edit the initial message
+			err := messenger.UpdateMessage(context.Background(), msgID, progressMsg)
+			if err != nil {
+				s.logger.Error("Failed to update webhook RAR status message", zap.Error(err), zap.Int("msg_id", msgID), zap.String("source", source))
+				return
+			}
+			s.logger.Info("Webhook RAR status message edited", zap.Int("msg_id", msgID))
+		}
+	})
+
+	if err != nil {
+		s.logger.Error("Failed to split file for webhook", zap.Error(err), zap.String("source", source))
+		// Delete initial message on error
+		if msgID > 0 {
+			if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
+				s.logger.Warn("Failed to delete webhook initial message on error", zap.Error(err), zap.Int("msg_id", msgID))
+			}
+		}
+		errorMsg := fmt.Sprintf("❌ <b>Error creating RAR parts:</b> %v", err)
+		messenger.SendMessage(ctx, errorMsg)
+		return
+	}
+
+	if len(rarParts) == 0 {
+		s.logger.Warn("No RAR parts created for webhook", zap.String("file", filePath), zap.String("source", source))
+		if msgID > 0 {
+			messenger.DeleteMessage(context.Background(), msgID)
+		}
+		return
+	}
+
+	s.logger.Info("File split complete for webhook", zap.Int("parts", len(rarParts)), zap.String("source", source))
+
+	// Delete initial message after RAR is done
+	if msgID > 0 {
+		if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
+			s.logger.Warn("Failed to delete initial webhook message", zap.Error(err), zap.Int("msg_id", msgID))
+		}
+	}
+
+	// Use centralized upload mechanism for RAR parts
+	if err := s.uploadFilesToChannel(ctx, rarParts, title, source, isPremium); err != nil {
+		s.logger.Error("Failed to upload webhook RAR parts", zap.Error(err), zap.String("source", source))
+	}
+
+	// Cleanup RAR files
+	rarSplitter.CleanupRarFiles(rarParts)
+	s.logger.Info("Webhook upload complete", zap.String("source", source), zap.String("title", title))
+}
+
+// uploadFilesToChannel is the centralized upload mechanism used by both test and webhook uploads
+// It handles pool creation, and actual file uploads using the already-authenticated client
+func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, title string, source string, isPremium bool) error {
+	// Ensure client is ready
+	if s.clientManager == nil || s.tgClient == nil {
+		s.logger.Error("Telegram client not initialized", zap.String("source", source))
+		return fmt.Errorf("telegram client not initialized")
+	}
+
+	if !s.clientManager.IsConnected() {
+		s.logger.Error("Telegram client is not connected", zap.String("source", source))
+		return fmt.Errorf("telegram client not connected")
+	}
+
+	// Use the already-running client (already authenticated via main client manager)
+	telegramClient := s.tgClient
+
+	// Create connection pool with middlewares
+	poolSize := int64(s.config.Telegram.PoolSize)
+	if poolSize < 1 {
+		poolSize = 8
+	}
+
 	middlewares := tgc.NewMiddleware(
 		&s.config.Telegram,
 		tgc.WithFloodWait(),
@@ -707,238 +1016,77 @@ func (s *Server) processTestUpload(filePath string) {
 	uploadPool := pool.NewPool(telegramClient, poolSize, s.logger, middlewares...)
 	defer uploadPool.Close()
 
-	// Create messenger for sending updates to channel
+	// Create messenger and uploader
 	messenger := uploader.NewChannelMessenger(telegramClient, s.config.Telegram.ChannelID, s.logger, uploadPool)
-	s.logger.Info("Messenger created", zap.Int64("channelID", s.config.Telegram.ChannelID))
-
-	// Send initial message to channel
-	fileName := filepath.Base(filePath)
-	startMsg := fmt.Sprintf("🎬 **Upload Started**\nFile: %s\nPremium: %v\nPreparing RAR parts...", fileName, isPremium)
-
-	s.logger.Info("Sending initial message to channel", zap.String("message", startMsg))
-	msgID, err := messenger.SendMessage(ctx, startMsg)
-	if err != nil {
-		s.logger.Error("Failed to send initial message", zap.Error(err))
-		return
-	}
-
-	s.logger.Info("Initial message sent to channel", zap.Int("msg_id", msgID))
-
-	// Create RAR splitter
-	rarSplitter := uploader.NewRarSplitter(s.logger)
-
-	// Determine part size based on premium status
-	partSize := uploader.NonPremiumMaxSize
-	if isPremium {
-		partSize = uploader.PremiumMaxSize
-	}
-
-	// Create temp directory for RAR files at project root if it doesn't exist
-	tempRarDir := filepath.Join(".", "temp")
-	if err := os.MkdirAll(tempRarDir, 0755); err != nil {
-		s.logger.Error("Failed to create temp RAR directory", zap.Error(err))
-		updateMsg := fmt.Sprintf("❌ Error creating temp directory: %v", err)
-		messenger.UpdateMessage(ctx, msgID, updateMsg)
-		return
-	}
-
-	s.logger.Info("Starting RAR split", zap.String("file", filePath), zap.Int64("part_size", partSize))
-
-	// Track last update time for progress messages (update every 2 seconds)
-	lastUpdateTime := time.Now()
-	lastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
-	var lastRarProgressMsg string
-
-	rarParts, err := rarSplitter.SplitFile(filePath, tempRarDir, partSize, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
-		// Only log periodically (every 10%) to avoid flooding logs
-		if percent%10 == 0 {
-			s.logger.Debug("RAR split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
-		}
-
-		// Log at Info level only every 5 seconds (not on every callback)
-		now := time.Now()
-		if now.Sub(lastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
-			s.logger.Info("RAR split in progress", zap.Int("percent", percent), zap.Int64("bytes", bytesProcessed))
-			lastInfoLogTime = now
-		}
-
-		// Edit status message every 2 seconds or at completion
-		if now.Sub(lastUpdateTime) >= 2*time.Second || percent == 100 {
-			lastUpdateTime = now
-			progressMsg := fmt.Sprintf("🎬 **Preparing RAR Parts**\nFile: %s\nProgress: %d%%\nBytes: %.1f MB / %.1f MB", fileName, percent, float64(bytesProcessed)/1024/1024, float64(totalBytes)/1024/1024)
-
-			// Only update if message content actually changed
-			if progressMsg == lastRarProgressMsg {
-				// Message content is the same, skip update to avoid MESSAGE_NOT_MODIFIED error
-				return
-			}
-			lastRarProgressMsg = progressMsg
-
-			// Always edit the initial message (msgID was sent at the start)
-			err := messenger.UpdateMessage(context.Background(), msgID, progressMsg)
-			if err != nil {
-				s.logger.Error("Failed to update RAR status message", zap.Error(err), zap.Int("msg_id", msgID))
-				return
-			}
-			s.logger.Info("RAR status message edited", zap.Int("msg_id", msgID))
-		}
-	})
-	if err != nil {
-		s.logger.Error("Failed to split file into RAR parts", zap.Error(err))
-		// Delete initial message on error
-		if msgID > 0 {
-			if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
-				s.logger.Warn("Failed to delete initial message on error", zap.Error(err), zap.Int("msg_id", msgID))
-			}
-		}
-		errorMsg := fmt.Sprintf("❌ Error creating RAR parts: %v", err)
-		messenger.SendMessage(ctx, errorMsg)
-		return
-	}
-
-	// Delete initial message after RAR is done
-	if msgID > 0 {
-		if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
-			s.logger.Warn("Failed to delete initial message", zap.Error(err), zap.Int("msg_id", msgID))
-		}
-	}
-
-	s.logger.Info("RAR split complete", zap.Int("parts", len(rarParts)))
-
-	// Create telegram uploader for sending files
 	telegramUploader := uploader.NewTelegramUploader(telegramClient, s.config.Telegram.ChannelID, s.logger, &s.config.Telegram, uploadPool)
-	s.logger.Info("Telegram uploader created")
 
-	// Upload each RAR part sequentially to Telegram channel
-	uploadedParts := 0
+	// Upload each file
+	for i, filePath := range filePaths {
+		fileName := filepath.Base(filePath)
+		fileNum := i + 1
+		totalFiles := len(filePaths)
 
-	for i, rarFilePath := range rarParts {
-		partNum := i + 1
-		zipFileInfo, err := os.Stat(rarFilePath)
-		if err != nil {
-			s.logger.Error("Failed to stat RAR file", zap.String("file", rarFilePath), zap.Error(err))
-			continue
-		}
+		s.logger.Info("Uploading file", zap.String("file", fileName), zap.Int("number", fileNum), zap.Int("total", totalFiles), zap.String("source", source))
 
-		s.logger.Info("Uploading RAR part", zap.Int("number", partNum), zap.Int("total", len(rarParts)), zap.Int64("size", zipFileInfo.Size()))
+		// Send status message
+		statusMsg := fmt.Sprintf(
+			"📤 <b>Uploading Part %d of %d</b>\n\n"+
+				"<b>Source:</b> %s\n"+
+				"<b>Title:</b> %s\n"+
+				"<b>File:</b> <b><code>%s</code></b>\n\n"+
+				"<b>Starting...</b>",
+			fileNum, totalFiles, strings.ToUpper(source), title, fileName,
+		)
+		msgID, _ := messenger.SendMessage(ctx, statusMsg)
 
-		rarFileName := filepath.Base(rarFilePath)
+		// Track last update time for progress messages (update every 2 seconds)
+		lastUpdateTime := time.Now()
+		uploadStartTime := time.Now()
+		lastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
+		var lastProgressMsg string
 
-		// Use context.Background() with timeout
-		uploadCtx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
-
-		// Track last update time for progress updates (every 2 seconds)
-		partLastUpdateTime := time.Now()
-		partLastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
-		var partStatusMsgID int
-		var lastPartProgressMsg string
-
-		_, err = telegramUploader.UploadToChannel(uploadCtx, rarFilePath, rarFileName, func(current, total int64, percent int) {
-			// Calculate overall progress
-			totalSize := int64(0)
-			for _, rarPath := range rarParts {
-				info, _ := os.Stat(rarPath)
-				if info != nil {
-					totalSize += info.Size()
-				}
-			}
-
-			totalUploadedSoFar := int64(0)
-			for j := 0; j < i; j++ {
-				info, _ := os.Stat(rarParts[j])
-				if info != nil {
-					totalUploadedSoFar += info.Size()
-				}
-			}
-			totalUploadedSoFar += current
-
-			overallPercent := int(0)
-			if totalSize > 0 {
-				overallPercent = int(totalUploadedSoFar * 100 / totalSize)
-			}
-
-			// Edit progress message every 2 seconds or on completion
-			now := time.Now()
+		// Upload the file with throttled progress updates and speed calculation
+		_, err := telegramUploader.UploadToChannel(ctx, filePath, fileName, func(current, total int64, percent int) {
+			elapsed := time.Since(uploadStartTime)
 
 			// Log at Info level only every 5 seconds (not on every callback)
-			if now.Sub(partLastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
-				s.logger.Info("Upload in progress", zap.Int("part", partNum), zap.Int("percent", percent), zap.Int("overall_percent", overallPercent))
-				partLastInfoLogTime = now
+			now := time.Now()
+			if now.Sub(lastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
+				s.logger.Info("Upload in progress", zap.Int("part", fileNum), zap.Int("percent", percent), zap.String("source", source), zap.String("speed", formatSpeed(current, elapsed)))
+				lastInfoLogTime = now
 			}
-			if now.Sub(partLastUpdateTime) >= 2*time.Second || percent == 100 {
-				partLastUpdateTime = now
-				partProgressMsg := fmt.Sprintf("📤 **Uploading Part %d of %d**\nFile: %s\nPart Progress: %d%%\nOverall Progress: %d%%", partNum, len(rarParts), rarFileName, percent, overallPercent)
+
+			// Edit progress message only every 2 seconds or at completion
+			if msgID > 0 && (now.Sub(lastUpdateTime) >= 2*time.Second || percent == 100) {
+				lastUpdateTime = now
+				progressMsg := formatUploadProgressMessage(fileNum, totalFiles, source, title, fileName, percent, current, total, elapsed)
 
 				// Only update if message content actually changed
-				if partProgressMsg == lastPartProgressMsg && partStatusMsgID > 0 {
+				if progressMsg == lastProgressMsg {
 					return
 				}
-				lastPartProgressMsg = partProgressMsg
+				lastProgressMsg = progressMsg
 
-				// If no status message exists yet, send one. Otherwise edit it.
-				if partStatusMsgID == 0 {
-					newMsgID, err := messenger.SendMessage(context.Background(), partProgressMsg)
-					if err != nil {
-						s.logger.Error("Failed to send upload status message", zap.Error(err))
-						return
-					}
-					partStatusMsgID = newMsgID
-					s.logger.Debug("Upload status message sent", zap.Int("msg_id", partStatusMsgID))
-				} else {
-					err := messenger.UpdateMessage(context.Background(), partStatusMsgID, partProgressMsg)
-					if err != nil {
-						s.logger.Error("Failed to update upload status message", zap.Error(err), zap.Int("msg_id", partStatusMsgID))
-						// If update fails, send new message
-						newMsgID, sendErr := messenger.SendMessage(context.Background(), partProgressMsg)
-						if sendErr == nil {
-							messenger.DeleteMessage(context.Background(), partStatusMsgID)
-							partStatusMsgID = newMsgID
-						}
-						return
-					}
-					s.logger.Debug("Upload status message edited", zap.Int("msg_id", partStatusMsgID))
-				}
+				messenger.UpdateMessage(ctx, msgID, progressMsg)
 			}
 		})
 
-		cancel()
-
 		if err != nil {
-			s.logger.Error("Failed to upload RAR part", zap.Error(err), zap.Int("number", partNum))
-			// Delete upload message on error
-			if partStatusMsgID > 0 {
-				deleteErr := messenger.DeleteMessage(context.Background(), partStatusMsgID)
-				if deleteErr != nil {
-					s.logger.Error("Failed to delete upload message on error", zap.Error(deleteErr), zap.Int("msg_id", partStatusMsgID))
-				} else {
-					s.logger.Debug("Upload message deleted on error", zap.Int("msg_id", partStatusMsgID))
-				}
+			s.logger.Error("Failed to upload file", zap.Error(err), zap.String("file", fileName), zap.String("source", source))
+			if msgID > 0 {
+				errorMsg := fmt.Sprintf("❌ <b>Failed to upload Part %d:</b> %v", fileNum, err)
+				messenger.UpdateMessage(ctx, msgID, errorMsg)
 			}
-			errorMsg := fmt.Sprintf("❌ **Part %d Failed**\nError: %v", partNum, err)
-			messenger.SendMessage(ctx, errorMsg)
-			continue
+			return err
 		}
 
-		uploadedParts++
-		s.logger.Debug("RAR part upload complete", zap.Int("number", partNum))
-
-		// Delete the upload message when complete (don't keep old messages)
-		if partStatusMsgID > 0 {
-			deleteErr := messenger.DeleteMessage(context.Background(), partStatusMsgID)
-			if deleteErr != nil {
-				s.logger.Error("Failed to delete upload message on success", zap.Error(deleteErr), zap.Int("msg_id", partStatusMsgID))
-			} else {
-				s.logger.Debug("Upload message deleted on success", zap.Int("msg_id", partStatusMsgID))
-			}
+		// Delete progress message after successful upload
+		if msgID > 0 {
+			messenger.DeleteMessage(ctx, msgID)
 		}
 
-		// Small delay between parts
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Cleanup RAR files
-	rarSplitter.CleanupRarFiles(rarParts)
-	s.logger.Info("RAR files cleaned up")
-
-	s.logger.Info("Test upload complete", zap.String("file", filePath))
+	return nil
 }

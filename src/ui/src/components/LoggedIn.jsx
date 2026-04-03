@@ -1,35 +1,12 @@
 import { useState } from 'react'
 import './LoggedIn.css'
+import WebhookTest from './WebhookTest'
 
 export default function LoggedIn({ user, onLogout }) {
   const username = user.username || 'User'
   const firstName = user.first_name || ''
   const lastName = user.last_name || ''
   const displayName = `${firstName} ${lastName}`.trim() || username
-  
-  const [testLoading, setTestLoading] = useState(false)
-
-  const handleTestUpload = async () => {
-    setTestLoading(true)
-    try {
-      const response = await fetch('/api/webhooks/test-upload', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      })
-      
-      if (!response.ok) {
-        throw new Error('Test upload failed')
-      }
-      
-      alert('Test upload started! Check your Telegram channel for the file.')
-    } catch (error) {
-      alert('Error: ' + error.message)
-    } finally {
-      setTestLoading(false)
-    }
-  }
 
   return (
     <div className="app logged-in">
@@ -47,19 +24,15 @@ export default function LoggedIn({ user, onLogout }) {
             )}
           </div>
 
-          <button 
-            className="btn-test-upload" 
-            onClick={handleTestUpload}
-            disabled={testLoading}
-          >
-            {testLoading ? 'Starting...' : 'Test Upload'}
-          </button>
-
-          <button className="btn-logout" onClick={onLogout} disabled={testLoading}>
+          <button className="btn-logout" onClick={onLogout}>
             Logout
           </button>
 
           <p className="footer-text">Telegramarr is ready for file uploads</p>
+        </div>
+
+        <div className="webhook-test-container">
+          <WebhookTest apiBaseUrl="" />
         </div>
       </div>
     </div>
