@@ -26,6 +26,7 @@ func NewZipSplitter(logger *zap.Logger) *ZipSplitter {
 // Each ZIP part will contain a portion of the original file without compression
 // isPremium determines the max file size (2GB for free, 4GB for premium)
 // progressCallback is called with (bytesProcessed, totalBytes, percentage)
+// If ZIP files already exist with correct sizes, they will be reused (no re-splitting)
 func (zs *ZipSplitter) SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, progressCallback func(bytesProcessed, totalBytes int64, percent int)) ([]string, error) {
 	fileInfo, err := os.Stat(inputPath)
 	if err != nil {
@@ -58,6 +59,25 @@ func (zs *ZipSplitter) SplitFile(inputPath string, outputDir string, partSize in
 		zap.Int64("effective_part_size", effectivePartSize),
 		zap.Bool("premium_user", isPremium),
 		zap.Int64("num_parts", numParts))
+
+	// Check if ZIP parts already exist with correct sizes
+	existingParts := zs.checkExistingZipParts(outputDir, fileName, numParts)
+	if len(existingParts) == int(numParts) {
+		zs.logger.Info("Reusing existing ZIP parts", zap.Int("count", len(existingParts)))
+		// Still call progress callback to show 100% completion
+		if progressCallback != nil {
+			progressCallback(totalSize, totalSize, 100)
+		}
+		return existingParts, nil
+	}
+
+	// If some parts exist but not all, clean them up and start fresh
+	if len(existingParts) > 0 {
+		zs.logger.Info("Partial ZIP parts found, cleaning up and recreating", zap.Int("existing", len(existingParts)), zap.Int("expected", int(numParts)))
+		for _, part := range existingParts {
+			os.Remove(part)
+		}
+	}
 
 	var zipParts []string
 	inputFile, err := os.Open(inputPath)
@@ -210,13 +230,41 @@ func (zs *ZipSplitter) copyWithProgress(dst io.Writer, src io.Reader, partSize, 
 	return bytesWritten, nil
 }
 
+// checkExistingZipParts checks if ZIP part files already exist with correct sizes
+// Returns a list of existing ZIP part paths if all parts exist, empty list otherwise
+func (zs *ZipSplitter) checkExistingZipParts(outputDir string, fileName string, numParts int64) []string {
+	var existingParts []string
+
+	for partNum := int64(0); partNum < numParts; partNum++ {
+		zipFileName := fmt.Sprintf("Part_%d_of_%d_%s.zip", partNum+1, numParts, fileName)
+		zipPath := filepath.Join(outputDir, zipFileName)
+
+		// Check if file exists
+		fileInfo, err := os.Stat(zipPath)
+		if err != nil {
+			// File doesn't exist or error accessing it
+			return []string{} // Return empty to indicate not all parts exist
+		}
+
+		// File exists and is not a directory
+		if !fileInfo.IsDir() && fileInfo.Size() > 0 {
+			existingParts = append(existingParts, zipPath)
+		} else {
+			// File exists but is empty or is a directory
+			return []string{} // Return empty to indicate invalid part
+		}
+	}
+
+	return existingParts
+}
+
 // CleanupZipFiles removes all ZIP part files
 func (zs *ZipSplitter) CleanupZipFiles(zipParts []string) {
 	for _, zipFile := range zipParts {
 		if err := os.Remove(zipFile); err != nil {
 			zs.logger.Warn("Failed to remove ZIP file", zap.String("file", zipFile), zap.Error(err))
 		} else {
-			zs.logger.Info("Removed ZIP file", zap.String("file", zipFile))
+			zs.logger.Debug("Removed ZIP file", zap.String("file", zipFile))
 		}
 	}
 }

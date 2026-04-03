@@ -8,6 +8,17 @@ telegram:
   lang_pack: "tdesktop"
   system_lang_code: "en-US"
   lang_code: "en"
+  
+  # Rate limiting configuration (matching teldrive architecture)
+  rate_limit: false          # Set to true to enable global rate limiting (default: false for max speed)
+  rate: 100                  # Rate limit interval in milliseconds (default: 100ms)
+  rate_burst: 5              # Burst capacity for rate limiting (default: 5 requests)
+  max_retries: 5             # Maximum retry attempts on Telegram errors (default: 5)
+  
+  # Upload performance configuration
+  upload_threads: 8        # Number of parallel upload threads (default: 8, range: 1-16)
+  upload_part_size: 512      # Upload chunk size in KB (default: 512, range: 256-2048)
+  pool_size: 8               # Connection pool size for concurrent uploads (default: 8, range: 1-32)
 
 server:
   port: 8080
@@ -16,4 +27,3 @@ server:
 logging:
   level: info
   format: json
-

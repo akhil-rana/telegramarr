@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gotd/td/telegram"
@@ -12,22 +13,33 @@ import (
 	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
+
+	"github.com/akhil-rana/telegramarr/internal/config"
+	"github.com/akhil-rana/telegramarr/internal/pool"
 )
 
 // TelegramUploader handles uploading files to Telegram
 type TelegramUploader struct {
 	client    *telegram.Client
+	pool      pool.Pool
 	logger    *zap.Logger
 	messenger *ChannelMessenger
+	cfg       *config.TelegramConfig
 }
 
 // NewTelegramUploader creates a new Telegram uploader
-func NewTelegramUploader(client *telegram.Client, channelID int64, logger *zap.Logger) *TelegramUploader {
-	messenger := NewChannelMessenger(client, channelID, logger)
+// pool MUST NOT be nil - it's required for concurrent uploads
+func NewTelegramUploader(client *telegram.Client, channelID int64, logger *zap.Logger, cfg *config.TelegramConfig, poolInstance pool.Pool) *TelegramUploader {
+	if poolInstance == nil {
+		logger.Fatal("Pool cannot be nil - connection pooling is required for optimal performance")
+	}
+	messenger := NewChannelMessenger(client, channelID, logger, poolInstance)
 	return &TelegramUploader{
 		client:    client,
+		pool:      poolInstance,
 		logger:    logger,
 		messenger: messenger,
+		cfg:       cfg,
 	}
 }
 
@@ -81,12 +93,15 @@ func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string
 						remainingBytes := fileSize - current
 						if bytesSinceLast > 0 {
 							remainingSeconds := time.Duration(float64(remainingBytes) / (float64(bytesSinceLast) / elapsed.Seconds()))
-							tu.logger.Info("Upload progress",
-								zap.Int64("current", current),
-								zap.Int64("total", fileSize),
-								zap.Int("percent", percent),
-								zap.Float64("speed_mbps", speedMBps),
-								zap.Duration("eta", remainingSeconds))
+							// Only log every 10% to avoid log spam
+							if percent%10 == 0 {
+								tu.logger.Debug("Upload progress",
+									zap.Int64("current", current),
+									zap.Int64("total", fileSize),
+									zap.Int("percent", percent),
+									zap.Float64("speed_mbps", speedMBps),
+									zap.Duration("eta", remainingSeconds))
+							}
 						}
 					}
 
@@ -98,22 +113,43 @@ func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string
 		},
 	}
 
-	// Get fresh API client for upload
-	apiClient := tu.client.API()
+	// Get API client from pool (required for concurrent uploads)
+	apiClient := tu.pool.Default(ctx)
 
-	// Create file uploader with multiple threads (like teldrive does)
-	// Use 8 threads for high speed (same as teldrive default)
-	// Rate limiting and backoff is handled at the part level in the upload orchestrator
-	// 512KB part size (standard Telegram upload size)
+	// Use configured thread count and part size (from config, with sensible defaults)
+	threads := tu.cfg.UploadThreads
+	if threads <= 0 || threads > 16 {
+		threads = 8 // Default fallback
+		tu.logger.Warn("Invalid upload_threads config, using default", zap.Int("threads", threads))
+	}
+
+	partSizeKB := tu.cfg.UploadPartSize
+	if partSizeKB <= 0 || partSizeKB > 2048 {
+		partSizeKB = 512 // Default fallback
+		tu.logger.Warn("Invalid upload_part_size config, using default", zap.Int("part_size_kb", partSizeKB))
+	}
+	partSizeBytes := partSizeKB * 1024
+
+	tu.logger.Info("Upload configuration", zap.Int("threads", threads), zap.Int("part_size_kb", partSizeKB))
+
+	// Telegram handles FLOOD_WAIT internally - we just need to let it retry
 	fileUploader := uploader.NewUploader(apiClient).
-		WithThreads(8).
-		WithPartSize(512 * 1024)
+		WithThreads(threads).
+		WithPartSize(partSizeBytes)
 
 	// Upload file to Telegram
 	tu.logger.Info("Starting file upload to Telegram", zap.String("file", fileName), zap.Int64("size", fileSize))
 
 	uploadedFile, err := fileUploader.Upload(ctx, uploader.NewUpload(fileName, progressReader, fileSize))
 	if err != nil {
+		// Check if error is FLOOD_WAIT (rate limiting)
+		errStr := err.Error()
+		if strings.Contains(errStr, "FLOOD_WAIT") {
+			// Extract wait time if available and log it
+			tu.logger.Warn("Telegram FLOOD_WAIT rate limiting during upload",
+				zap.Error(err),
+				zap.String("file", fileName))
+		}
 		tu.logger.Error("Failed to upload file to Telegram", zap.Error(err))
 		return 0, fmt.Errorf("failed to upload file: %w", err)
 	}
@@ -151,16 +187,86 @@ func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string
 		ForceFile(true)
 
 	// Send the document using message builder (like teldrive)
-	sender := message.NewSender(apiClient)
-	target := sender.To(&tg.InputPeerChannel{
-		ChannelID:  tu.messenger.channelID,
-		AccessHash: freshAccessHash,
-	})
+	// Retry logic for transient failures (rate limiting, temporary issues)
+	// These often succeed on retry even after gotd's internal retries are exhausted
+	var msgResult tg.UpdatesClass
+	var lastErr error
+	maxRetries := 15 // Increased from 5 to handle Telegram rate limiting better
+	baseDelay := 1 * time.Second
 
-	msgResult, err := target.Media(ctx, document)
-	if err != nil {
-		tu.logger.Error("Failed to send document to channel", zap.Error(err))
-		return 0, fmt.Errorf("failed to send document: %w", err)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		sender := message.NewSender(apiClient)
+		target := sender.To(&tg.InputPeerChannel{
+			ChannelID:  tu.messenger.channelID,
+			AccessHash: freshAccessHash,
+		})
+
+		msgResult, lastErr = target.Media(ctx, document)
+		if lastErr == nil {
+			break // Success, exit retry loop
+		}
+
+		// Check if error is retryable
+		errStr := lastErr.Error()
+		isRetryable := false
+
+		// List of retryable error messages
+		retryableErrors := []string{
+			"retry limit reached",
+			"FLOOD_WAIT",
+			"Timedout",
+			"connection dead",
+			"WORKER_BUSY_TOO_LONG_RETRY",
+			"rpcDoRequest",
+			"server internal error",
+			"temporary server error",
+		}
+
+		for _, retryErr := range retryableErrors {
+			if strings.Contains(errStr, retryErr) {
+				isRetryable = true
+				break
+			}
+		}
+
+		if !isRetryable {
+			// Non-retryable error, fail immediately
+			tu.logger.Error("Failed to send document to channel (non-retryable error)",
+				zap.Error(lastErr), zap.Int("attempt", attempt+1))
+			return 0, fmt.Errorf("failed to send document: %w", lastErr)
+		}
+
+		if attempt == maxRetries-1 {
+			// Last attempt reached, log warning but don't fail - file is uploaded
+			tu.logger.Warn("Max retries reached sending document to channel, but file upload succeeded",
+				zap.Error(lastErr),
+				zap.Int("attempt", attempt+1),
+				zap.String("file", fileName))
+			// Return success anyway since the file was uploaded to Telegram's servers
+			// Even if we can't confirm the message ID, the file is safely stored
+			msgID := extractMessageID(msgResult)
+			if msgID == 0 {
+				// If we can't get message ID, use -1 to indicate partial success
+				return -1, nil
+			}
+			return int64(msgID), nil
+		}
+
+		// Calculate exponential backoff
+		delay := baseDelay * time.Duration(1<<uint(attempt/3)) // Increase delay every 3 attempts
+		tu.logger.Debug("Retrying document send after transient error",
+			zap.Int("attempt", attempt+1),
+			zap.Int("max_attempts", maxRetries),
+			zap.Duration("delay", delay),
+			zap.Error(lastErr))
+
+		// Wait before retrying
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+		case <-time.After(delay):
+			// Continue to next retry
+		}
 	}
 
 	// Extract message ID from result

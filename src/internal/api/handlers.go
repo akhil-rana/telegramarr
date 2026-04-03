@@ -15,6 +15,8 @@ import (
 
 	"github.com/akhil-rana/telegramarr/internal/auth"
 	"github.com/akhil-rana/telegramarr/internal/config"
+	"github.com/akhil-rana/telegramarr/internal/pool"
+	tgc "github.com/akhil-rana/telegramarr/internal/telegram"
 	"github.com/akhil-rana/telegramarr/internal/uploader"
 	"github.com/gin-gonic/gin"
 	"github.com/go-faster/errors"
@@ -73,7 +75,7 @@ func NewServer(logger *zap.Logger, cfg *config.Config, session *auth.SessionData
 
 	// Initialize Telegram client with session if available and authenticated
 	if session != nil && session.Authenticated {
-		client, err := auth.CreateClientFromSession(context.Background(), cfg.Telegram.AppID, cfg.Telegram.AppHash, session, logger)
+		client, err := auth.CreateClientFromSession(context.Background(), cfg.Telegram.AppID, cfg.Telegram.AppHash, session, &cfg.Telegram, logger)
 		if err != nil {
 			logger.Error("Failed to create Telegram client from session", zap.Error(err))
 		} else {
@@ -226,13 +228,25 @@ func (s *Server) AuthWebSocket(c *gin.Context) {
 }
 
 func (s *Server) createTelegramClient(ctx context.Context, dispatcher *tg.UpdateDispatcher, sessionStorage session.Storage) (*telegram.Client, error) {
-	// Create client with device info
+	// Create middlewares for the client
+	// Order: FloodWait -> Recovery -> Retry -> RateLimit
+	// Use background context for recovery to avoid cancellation during RPC calls
+	bgCtx := context.Background()
+	middlewares := tgc.NewMiddleware(&s.config.Telegram,
+		tgc.WithFloodWait(),
+		tgc.WithRecovery(bgCtx),
+		tgc.WithRetry(s.config.Telegram.MaxRetries),
+		tgc.WithRateLimit(),
+	)
+
+	// Create client with device info and middleware chain
 	return telegram.NewClient(
 		s.config.Telegram.AppID,
 		s.config.Telegram.AppHash,
 		telegram.Options{
 			SessionStorage: sessionStorage,
 			UpdateHandler:  dispatcher,
+			Middlewares:    middlewares,
 			Device: telegram.DeviceConfig{
 				DeviceModel:    s.config.Telegram.DeviceModel,
 				SystemVersion:  s.config.Telegram.SystemVersion,
@@ -627,7 +641,7 @@ func (s *Server) processTestUpload(filePath string) {
 
 	ctx := context.Background()
 
-	s.logger.Info("Starting test upload", zap.String("file", filePath), zap.Any("session", s.session))
+	s.logger.Info("Starting test upload", zap.String("file", filePath), zap.String("user", s.session.Username))
 
 	// Check file exists
 	if _, err := os.Stat(filePath); err != nil {
@@ -675,8 +689,26 @@ func (s *Server) processTestUpload(filePath string) {
 	// Give the client a moment to connect
 	time.Sleep(2 * time.Second)
 
+	// Create connection pool for messenger and uploader
+	poolSize := int64(s.config.Telegram.PoolSize)
+	if poolSize < 1 {
+		poolSize = 8
+	}
+
+	// Create middleware chain for pool: FloodWait -> Recovery -> Retry -> RateLimit
+	middlewares := tgc.NewMiddleware(
+		&s.config.Telegram,
+		tgc.WithFloodWait(),
+		tgc.WithRecovery(ctx),
+		tgc.WithRetry(s.config.Telegram.MaxRetries),
+		tgc.WithRateLimit(),
+	)
+
+	uploadPool := pool.NewPool(telegramClient, poolSize, s.logger, middlewares...)
+	defer uploadPool.Close()
+
 	// Create messenger for sending updates to channel
-	messenger := uploader.NewChannelMessenger(telegramClient, s.config.Telegram.ChannelID, s.logger)
+	messenger := uploader.NewChannelMessenger(telegramClient, s.config.Telegram.ChannelID, s.logger, uploadPool)
 	s.logger.Info("Messenger created", zap.Int64("channelID", s.config.Telegram.ChannelID))
 
 	// Send initial message to channel
@@ -714,15 +746,25 @@ func (s *Server) processTestUpload(filePath string) {
 
 	// Track last update time for progress messages (update every 2 seconds)
 	lastUpdateTime := time.Now()
+	lastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
 	var zipStatusMsgID int
 	initialMsgDeleted := false
 	var lastZipProgressMsg string
 
 	zipParts, err := zipSplitter.SplitFile(filePath, tempZipDir, partSize, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
-		s.logger.Info("ZIP split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
+		// Only log periodically (every 10%) to avoid flooding logs
+		if percent%10 == 0 {
+			s.logger.Debug("ZIP split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
+		}
+
+		// Log at Info level only every 5 seconds (not on every callback)
+		now := time.Now()
+		if now.Sub(lastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
+			s.logger.Info("ZIP split in progress", zap.Int("percent", percent), zap.Int64("bytes", bytesProcessed))
+			lastInfoLogTime = now
+		}
 
 		// Edit status message every 2 seconds or at completion
-		now := time.Now()
 		if now.Sub(lastUpdateTime) >= 2*time.Second || percent == 100 {
 			lastUpdateTime = now
 			progressMsg := fmt.Sprintf("🎬 **Preparing ZIP Parts**\nFile: %s\nProgress: %d%%\nBytes: %.1f MB / %.1f MB", fileName, percent, float64(bytesProcessed)/1024/1024, float64(totalBytes)/1024/1024)
@@ -738,9 +780,12 @@ func (s *Server) processTestUpload(filePath string) {
 			if zipStatusMsgID == 0 {
 				// Delete initial "Upload Started" message on first progress update
 				if !initialMsgDeleted && msgID > 0 {
-					messenger.DeleteMessage(context.Background(), msgID)
+					if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
+						s.logger.Warn("Failed to delete initial message during ZIP progress", zap.Error(err), zap.Int("msg_id", msgID))
+					} else {
+						s.logger.Info("Initial message deleted", zap.Int("msg_id", msgID))
+					}
 					initialMsgDeleted = true
-					s.logger.Info("Initial message deleted", zap.Int("msg_id", msgID))
 				}
 
 				newMsgID, err := messenger.SendMessage(context.Background(), progressMsg)
@@ -769,10 +814,14 @@ func (s *Server) processTestUpload(filePath string) {
 		s.logger.Error("Failed to split file into ZIP parts", zap.Error(err))
 		// Delete initial and ZIP status messages on error
 		if msgID > 0 {
-			messenger.DeleteMessage(context.Background(), msgID)
+			if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
+				s.logger.Warn("Failed to delete initial message on error", zap.Error(err), zap.Int("msg_id", msgID))
+			}
 		}
 		if zipStatusMsgID > 0 {
-			messenger.DeleteMessage(context.Background(), zipStatusMsgID)
+			if err := messenger.DeleteMessage(context.Background(), zipStatusMsgID); err != nil {
+				s.logger.Warn("Failed to delete ZIP status message on error", zap.Error(err), zap.Int("msg_id", zipStatusMsgID))
+			}
 		}
 		errorMsg := fmt.Sprintf("❌ Error creating ZIP parts: %v", err)
 		messenger.SendMessage(ctx, errorMsg)
@@ -781,16 +830,20 @@ func (s *Server) processTestUpload(filePath string) {
 
 	// Delete ZIP status message after ZIP is done (and initial message if not already deleted)
 	if msgID > 0 && !initialMsgDeleted {
-		messenger.DeleteMessage(context.Background(), msgID)
+		if err := messenger.DeleteMessage(context.Background(), msgID); err != nil {
+			s.logger.Warn("Failed to delete initial message", zap.Error(err), zap.Int("msg_id", msgID))
+		}
 	}
 	if zipStatusMsgID > 0 {
-		messenger.DeleteMessage(context.Background(), zipStatusMsgID)
+		if err := messenger.DeleteMessage(context.Background(), zipStatusMsgID); err != nil {
+			s.logger.Warn("Failed to delete ZIP status message", zap.Error(err), zap.Int("msg_id", zipStatusMsgID))
+		}
 	}
 
 	s.logger.Info("ZIP split complete", zap.Int("parts", len(zipParts)))
 
 	// Create telegram uploader for sending files
-	telegramUploader := uploader.NewTelegramUploader(telegramClient, s.config.Telegram.ChannelID, s.logger)
+	telegramUploader := uploader.NewTelegramUploader(telegramClient, s.config.Telegram.ChannelID, s.logger, &s.config.Telegram, uploadPool)
 	s.logger.Info("Telegram uploader created")
 
 	// Upload each ZIP part sequentially to Telegram channel
@@ -813,6 +866,7 @@ func (s *Server) processTestUpload(filePath string) {
 
 		// Track last update time for progress updates (every 2 seconds)
 		partLastUpdateTime := time.Now()
+		partLastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
 		var partStatusMsgID int
 		var lastPartProgressMsg string
 
@@ -842,6 +896,12 @@ func (s *Server) processTestUpload(filePath string) {
 
 			// Edit progress message every 2 seconds or on completion
 			now := time.Now()
+
+			// Log at Info level only every 5 seconds (not on every callback)
+			if now.Sub(partLastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
+				s.logger.Info("Upload in progress", zap.Int("part", partNum), zap.Int("percent", percent), zap.Int("overall_percent", overallPercent))
+				partLastInfoLogTime = now
+			}
 			if now.Sub(partLastUpdateTime) >= 2*time.Second || percent == 100 {
 				partLastUpdateTime = now
 				partProgressMsg := fmt.Sprintf("📤 **Uploading Part %d of %d**\nFile: %s\nPart Progress: %d%%\nOverall Progress: %d%%", partNum, len(zipParts), zipFileName, percent, overallPercent)
@@ -860,7 +920,7 @@ func (s *Server) processTestUpload(filePath string) {
 						return
 					}
 					partStatusMsgID = newMsgID
-					s.logger.Info("Upload status message sent", zap.Int("msg_id", partStatusMsgID))
+					s.logger.Debug("Upload status message sent", zap.Int("msg_id", partStatusMsgID))
 				} else {
 					err := messenger.UpdateMessage(context.Background(), partStatusMsgID, partProgressMsg)
 					if err != nil {
@@ -873,7 +933,7 @@ func (s *Server) processTestUpload(filePath string) {
 						}
 						return
 					}
-					s.logger.Info("Upload status message edited", zap.Int("msg_id", partStatusMsgID))
+					s.logger.Debug("Upload status message edited", zap.Int("msg_id", partStatusMsgID))
 				}
 			}
 		})
@@ -888,7 +948,7 @@ func (s *Server) processTestUpload(filePath string) {
 				if deleteErr != nil {
 					s.logger.Error("Failed to delete upload message on error", zap.Error(deleteErr), zap.Int("msg_id", partStatusMsgID))
 				} else {
-					s.logger.Info("Upload message deleted on error", zap.Int("msg_id", partStatusMsgID))
+					s.logger.Debug("Upload message deleted on error", zap.Int("msg_id", partStatusMsgID))
 				}
 			}
 			errorMsg := fmt.Sprintf("❌ **Part %d Failed**\nError: %v", partNum, err)
@@ -897,7 +957,7 @@ func (s *Server) processTestUpload(filePath string) {
 		}
 
 		uploadedParts++
-		s.logger.Info("ZIP part upload complete", zap.Int("number", partNum))
+		s.logger.Debug("ZIP part upload complete", zap.Int("number", partNum))
 
 		// Delete the upload message when complete (don't keep old messages)
 		if partStatusMsgID > 0 {
@@ -905,7 +965,7 @@ func (s *Server) processTestUpload(filePath string) {
 			if deleteErr != nil {
 				s.logger.Error("Failed to delete upload message on success", zap.Error(deleteErr), zap.Int("msg_id", partStatusMsgID))
 			} else {
-				s.logger.Info("Upload message deleted on success", zap.Int("msg_id", partStatusMsgID))
+				s.logger.Debug("Upload message deleted on success", zap.Int("msg_id", partStatusMsgID))
 			}
 		}
 

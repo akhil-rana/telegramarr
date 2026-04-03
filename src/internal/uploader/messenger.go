@@ -9,11 +9,14 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
+
+	"github.com/akhil-rana/telegramarr/internal/pool"
 )
 
 // ChannelMessenger handles sending messages to a Telegram channel
 type ChannelMessenger struct {
 	client      *telegram.Client
+	pool        pool.Pool
 	channelID   int64
 	logger      *zap.Logger
 	accessHash  int64
@@ -21,9 +24,12 @@ type ChannelMessenger struct {
 }
 
 // NewChannelMessenger creates a new channel messenger
-func NewChannelMessenger(client *telegram.Client, channelID int64, logger *zap.Logger) *ChannelMessenger {
+// When pool is provided, it will be used for concurrent message operations
+// When pool is nil, the client will be used directly for backwards compatibility
+func NewChannelMessenger(client *telegram.Client, channelID int64, logger *zap.Logger, poolInstance pool.Pool) *ChannelMessenger {
 	return &ChannelMessenger{
 		client:    client,
+		pool:      poolInstance,
 		channelID: channelID,
 		logger:    logger,
 	}
@@ -53,7 +59,10 @@ func (cm *ChannelMessenger) SendMessage(ctx context.Context, text string) (int, 
 		AccessHash: cm.accessHash,
 	}
 
-	result, err := cm.client.API().MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+	// Get API client from pool if available
+	apiClient := cm.getAPIClient(ctx)
+
+	result, err := apiClient.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
 		Peer:     inputPeer,
 		Message:  text,
 		RandomID: generateRandomID(),
@@ -66,7 +75,7 @@ func (cm *ChannelMessenger) SendMessage(ctx context.Context, text string) (int, 
 
 	// Extract message ID from result
 	msgID := extractMessageID(result)
-	cm.logger.Info("Message sent to channel", zap.Int("msg_id", msgID), zap.String("result_type", fmt.Sprintf("%T", result)))
+	cm.logger.Debug("Message sent to channel", zap.Int("msg_id", msgID))
 
 	if msgID == 0 {
 		cm.logger.Warn("Message ID was 0, checking result type", zap.String("result_type", fmt.Sprintf("%T", result)))
@@ -110,7 +119,10 @@ func (cm *ChannelMessenger) UpdateMessage(ctx context.Context, msgID int, text s
 		AccessHash: cm.accessHash,
 	}
 
-	_, err = cm.client.API().MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
+	// Get API client from pool if available
+	apiClient := cm.getAPIClient(ctx)
+
+	_, err = apiClient.MessagesEditMessage(ctx, &tg.MessagesEditMessageRequest{
 		Peer:    inputPeer,
 		ID:      msgID,
 		Message: text,
@@ -121,7 +133,7 @@ func (cm *ChannelMessenger) UpdateMessage(ctx context.Context, msgID int, text s
 		return fmt.Errorf("failed to update message: %w", err)
 	}
 
-	cm.logger.Info("Message updated", zap.Int("msg_id", msgID))
+	cm.logger.Debug("Message updated", zap.Int("msg_id", msgID))
 	return nil
 }
 
@@ -138,17 +150,45 @@ func (cm *ChannelMessenger) DeleteMessage(ctx context.Context, msgID int) error 
 		return fmt.Errorf("client is nil")
 	}
 
-	_, err := cm.client.API().MessagesDeleteMessages(ctx, &tg.MessagesDeleteMessagesRequest{
-		ID: []int{msgID},
+	// Fetch AccessHash if not already done
+	var err error
+	cm.accessMutex.Do(func() {
+		cm.accessHash, err = cm.fetchChannelAccessHash(ctx)
+	})
+	if err != nil {
+		cm.logger.Error("Failed to fetch channel access hash for deletion", zap.Error(err))
+		return fmt.Errorf("failed to fetch channel access hash: %w", err)
+	}
+
+	inputChannel := &tg.InputChannel{
+		ChannelID:  cm.channelID,
+		AccessHash: cm.accessHash,
+	}
+
+	// Get API client from pool if available
+	apiClient := cm.getAPIClient(ctx)
+
+	// Use ChannelsDeleteMessages for channel messages
+	_, err = apiClient.ChannelsDeleteMessages(ctx, &tg.ChannelsDeleteMessagesRequest{
+		Channel: inputChannel,
+		ID:      []int{msgID},
 	})
 
 	if err != nil {
-		cm.logger.Error("Failed to delete message", zap.Error(err), zap.Int("msg_id", msgID))
+		cm.logger.Error("Failed to delete message", zap.Error(err), zap.Int("msg_id", msgID), zap.Int64("channel_id", cm.channelID))
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
-	cm.logger.Info("Message deleted", zap.Int("msg_id", msgID))
+	cm.logger.Info("Message deleted from channel", zap.Int("msg_id", msgID), zap.Int64("channel_id", cm.channelID))
 	return nil
+}
+
+// getAPIClient returns an API client from the pool if available, otherwise from the base client
+func (cm *ChannelMessenger) getAPIClient(ctx context.Context) *tg.Client {
+	if cm.pool != nil {
+		return cm.pool.Default(ctx)
+	}
+	return cm.client.API()
 }
 
 // fetchChannelAccessHash fetches the access hash for the channel
@@ -163,7 +203,10 @@ func (cm *ChannelMessenger) fetchChannelAccessHash(ctx context.Context) (int64, 
 		},
 	}
 
-	result, err := cm.client.API().ChannelsGetChannels(ctx, channels)
+	// Get API client from pool if available
+	apiClient := cm.getAPIClient(ctx)
+
+	result, err := apiClient.ChannelsGetChannels(ctx, channels)
 	if err != nil {
 		cm.logger.Error("Failed to get channel info", zap.Error(err))
 		return 0, fmt.Errorf("failed to get channel info: %w", err)
