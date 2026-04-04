@@ -174,3 +174,4 @@ build/
 test/
 telegramarr
 config.yaml
+*.yaml

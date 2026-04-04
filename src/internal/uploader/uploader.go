@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	// Split sizes
-	PremiumMaxSize    int64 = 4 * 1024 * 1024 * 1024 // 4GB
-	NonPremiumMaxSize int64 = 2 * 1024 * 1024 * 1024 // 2GB
-	ChunkSize         int64 = 32 * 1024 * 1024       // 32MB chunks for reading
+	// Split sizes - using binary units (GiB) so they display correctly everywhere
+	// These are legacy constants; RAR splitting is now used instead
+	PremiumMaxSize    int64 = 4 * 1024 * 1024 * 1024 // 4 GiB (4,294,967,296 bytes)
+	NonPremiumMaxSize int64 = 2 * 1024 * 1024 * 1024 // 2 GiB (2,147,483,648 bytes)
+	ChunkSize         int64 = 32 * 1024 * 1024       // 32 MiB chunks for reading
 )
 
 // UploadProgress tracks upload progress

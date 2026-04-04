@@ -43,15 +43,10 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 
 	// Create subfolder in output directory for this file
 	fileSubDir := filepath.Join(outputDir, fileNameWithoutExt)
-	if err := os.MkdirAll(fileSubDir, 0755); err != nil {
-		rs.logger.Error("Failed to create file subdirectory", zap.String("dir", fileSubDir), zap.Error(err))
-		return nil, fmt.Errorf("failed to create file subdirectory: %w", err)
-	}
-
-	rs.logger.Info("Created RAR subdirectory", zap.String("dir", fileSubDir))
 
 	// RAR file split sizes
-	// Exact round numbers: 4GB for premium, 2GB for free
+	// RAR split: 4000 MiB for premium, 2000 MiB for free
+	// Effective size: slightly less for Telegram compatibility (4096 part limit × 512KB parts)
 	var rarVolumeMB int64
 	if isPremium {
 		rarVolumeMB = 4000 // 4GB for premium
@@ -60,11 +55,12 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 	}
 
 	// Also track the effective part size for progress/logging
+	// This is what Telegram can actually receive (4096 parts × 512KB)
 	var effectivePartSize int64
 	if isPremium {
-		effectivePartSize = int64(4193452032) // 4GB limit shown to Telegram
+		effectivePartSize = int64(4193452032) // 4GB limit shown to Telegram (3999 MiB)
 	} else {
-		effectivePartSize = int64(2097152000) // 2GB limit shown to Telegram
+		effectivePartSize = int64(2097152000) // 2GB limit shown to Telegram (2000 MiB)
 	}
 
 	// Calculate number of parts needed
@@ -88,13 +84,23 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 		return existingParts, nil
 	}
 
-	// If some parts exist but not all, clean them up and start fresh
-	if len(existingParts) > 0 {
-		rs.logger.Info("Partial RAR parts found, cleaning up and recreating", zap.Int("existing", len(existingParts)), zap.Int("expected", int(numParts)))
-		for _, part := range existingParts {
-			os.Remove(part)
+	// If some parts exist but not all, or folder has other files - clean it up and start fresh
+	if len(existingParts) > 0 || rs.dirHasFiles(fileSubDir) {
+		rs.logger.Info("Incomplete or corrupted RAR parts found, cleaning up and recreating",
+			zap.Int("existing", len(existingParts)),
+			zap.Int("expected", int(numParts)))
+		if err := os.RemoveAll(fileSubDir); err != nil {
+			rs.logger.Warn("Failed to remove existing RAR directory", zap.String("dir", fileSubDir), zap.Error(err))
+			// Continue anyway - MkdirAll will handle existing dir
 		}
 	}
+
+	if err := os.MkdirAll(fileSubDir, 0755); err != nil {
+		rs.logger.Error("Failed to create file subdirectory", zap.String("dir", fileSubDir), zap.Error(err))
+		return nil, fmt.Errorf("failed to create file subdirectory: %w", err)
+	}
+
+	rs.logger.Info("Created RAR subdirectory", zap.String("dir", fileSubDir))
 
 	// Create RAR output filename (will be part1.rar, part2.rar, etc.)
 	rarOutputBase := filepath.Join(fileSubDir, fileNameWithoutExt)
@@ -306,4 +312,14 @@ func (rs *RarSplitter) getTotalDirSize(dirPath string) int64 {
 		}
 	}
 	return totalSize
+}
+
+// dirHasFiles checks if a directory exists and has any files in it
+func (rs *RarSplitter) dirHasFiles(dirPath string) bool {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		// Directory doesn't exist or can't be read
+		return false
+	}
+	return len(entries) > 0
 }

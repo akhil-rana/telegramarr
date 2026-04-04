@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 
@@ -192,6 +193,75 @@ func (cm *ChannelMessenger) DeleteMessage(ctx context.Context, msgID int) error 
 
 	cm.logger.Info("Message deleted from channel", zap.Int("msg_id", msgID), zap.Int64("channel_id", cm.channelID))
 	return nil
+}
+
+// SendPhotoFromBytes sends a photo from byte data with an HTML-formatted caption
+func (cm *ChannelMessenger) SendPhotoFromBytes(ctx context.Context, photoBytes []byte, caption string) (int, error) {
+	if cm.client == nil {
+		cm.logger.Error("Client is nil, cannot send photo")
+		return 0, fmt.Errorf("client is nil")
+	}
+
+	if len(photoBytes) == 0 {
+		cm.logger.Error("Photo bytes are empty")
+		return 0, fmt.Errorf("photo bytes are empty")
+	}
+
+	// Strip HTML tags and get entities for caption
+	cleanedCaption, entities := stripHTMLAndParseEntities(caption)
+
+	// Fetch AccessHash if not already done
+	var err error
+	cm.accessMutex.Do(func() {
+		cm.accessHash, err = cm.fetchChannelAccessHash(ctx)
+	})
+	if err != nil {
+		cm.logger.Error("Failed to fetch channel access hash", zap.Error(err))
+		return 0, fmt.Errorf("failed to fetch channel access hash: %w", err)
+	}
+
+	inputPeer := &tg.InputPeerChannel{
+		ChannelID:  cm.channelID,
+		AccessHash: cm.accessHash,
+	}
+
+	// Get API client from pool if available
+	apiClient := cm.getAPIClient(ctx)
+
+	// Create an uploader for the photo
+	up := uploader.NewUploader(apiClient)
+
+	// Upload the photo
+	photo, err := up.FromBytes(ctx, "photo.jpg", photoBytes)
+	if err != nil {
+		cm.logger.Error("Failed to upload photo", zap.Error(err))
+		return 0, fmt.Errorf("failed to upload photo: %w", err)
+	}
+
+	// Create input media with the uploaded file
+	inputMedia := &tg.InputMediaUploadedPhoto{
+		File: photo,
+	}
+
+	// Send the message with photo
+	result, err := apiClient.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+		Peer:     inputPeer,
+		Media:    inputMedia,
+		Message:  cleanedCaption,
+		RandomID: generateRandomID(),
+		Entities: entities,
+	})
+
+	if err != nil {
+		cm.logger.Error("Failed to send photo message", zap.Error(err))
+		return 0, fmt.Errorf("failed to send photo message: %w", err)
+	}
+
+	// Extract message ID from result
+	msgID := extractMessageID(result)
+	cm.logger.Info("Photo sent to channel", zap.Int("msg_id", msgID))
+
+	return msgID, nil
 }
 
 // getAPIClient returns an API client from the pool if available, otherwise from the base client

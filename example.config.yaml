@@ -20,6 +20,16 @@ telegram:
   upload_part_size: 512      # Upload chunk size in KB (default: 512, range: 256-2048)
   pool_size: 8               # Connection pool size for concurrent uploads (default: 8, range: 1-32)
 
+# TMDB API Configuration (Optional)
+# Get your API key from: https://www.themoviedb.org/settings/api
+# This enables automatic movie poster and details fetching for Radarr webhooks
+tmdb:
+  api_key: "your_tmdb_api_key_here"  # Required: TMDB API key for accessing movie data
+  # Image configuration (optional, defaults provided)
+  image_base_url: "https://image.tmdb.org/t/p/"  # Base URL for TMDB poster/backdrop images
+  poster_size: "w342"                             # Poster width: w92, w154, w185, w342, w500, w780, original (default: w342)
+  backdrop_size: "w780"                           # Backdrop width: w300, w780, w1280, original (default: w780)
+
 server:
   port: 8080
   host: 0.0.0.0
