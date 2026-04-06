@@ -50,8 +50,8 @@ FROM alpine:latest
 
 WORKDIR /app
 
-# Install wget for healthcheck
-RUN apk add --no-cache wget \
+# Install wget and tini for healthcheck and signal handling
+RUN apk add --no-cache wget tini \
     && rm -rf /var/cache/apk/*
 
 # Install RAR only on amd64 (ARM64 uses 7z)
