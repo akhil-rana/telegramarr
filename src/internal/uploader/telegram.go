@@ -123,18 +123,9 @@ func (tu *TelegramUploader) UploadToChannelWithReply(ctx context.Context, filePa
 	// Get API client from pool (required for concurrent uploads)
 	apiClient := tu.pool.Default(ctx)
 
-	// Use configured thread count and part size (from config, with sensible defaults)
-	threads := tu.cfg.UploadThreads
-	if threads <= 0 || threads > 16 {
-		threads = 8 // Default fallback
-		tu.logger.Warn("Invalid upload_threads config, using default", zap.Int("threads", threads))
-	}
-
-	partSizeKB := tu.cfg.UploadPartSize
-	if partSizeKB <= 0 || partSizeKB > 2048 {
-		partSizeKB = 512 // Default fallback
-		tu.logger.Warn("Invalid upload_part_size config, using default", zap.Int("part_size_kb", partSizeKB))
-	}
+	// Use hardcoded upload configuration
+	const threads = 8
+	const partSizeKB = 512
 	partSizeBytes := partSizeKB * 1024
 
 	tu.logger.Info("Upload configuration", zap.Int("threads", threads), zap.Int("part_size_kb", partSizeKB))

@@ -35,6 +35,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// Webhook queue item types
+type webhookQueueItem struct {
+	itemType string // "radarr" or "sonarr"
+	radarr   *webhook.RadarrWebhookPayload
+	sonarr   *webhook.SonarrWebhookPayload
+}
+
 type Server struct {
 	router        *gin.Engine
 	logger        *zap.Logger
@@ -45,6 +52,9 @@ type Server struct {
 	dataDir       string
 	tgClient      *telegram.Client
 	clientManager *auth.ClientManager
+	// Webhook queue for sequential processing with delays
+	webhookQueue chan webhookQueueItem
+	queueDone    chan struct{}
 }
 
 type SocketMessage struct {
@@ -75,6 +85,8 @@ func NewServer(logger *zap.Logger, cfg *config.Config, session *auth.SessionData
 		sessionPath:   sessionPath,
 		sessionDBPath: sessionDBPath,
 		dataDir:       dataDir,
+		webhookQueue:  make(chan webhookQueueItem, 1000), // Queue up to 1000 webhooks
+		queueDone:     make(chan struct{}),
 	}
 
 	// Initialize Telegram client with session if available and authenticated
@@ -97,6 +109,9 @@ func NewServer(logger *zap.Logger, cfg *config.Config, session *auth.SessionData
 			}
 		}
 	}
+
+	// Start webhook queue processor
+	go s.webhookQueueProcessor()
 
 	s.setupRoutes()
 	return s
@@ -135,6 +150,41 @@ func (s *Server) setupRoutes() {
 func (s *Server) Run(port string) error {
 	s.logger.Info("Starting server on port " + port)
 	return s.router.Run("0.0.0.0:" + port)
+}
+
+// webhookQueueProcessor processes webhooks sequentially with delay between them
+func (s *Server) webhookQueueProcessor() {
+	var lastProcessTime time.Time
+	delaySeconds := time.Duration(s.config.App.DelayTime) * time.Second
+
+	for item := range s.webhookQueue {
+		// Calculate delay from last processing time
+		timeSinceLastProcess := time.Since(lastProcessTime)
+		if timeSinceLastProcess < delaySeconds && !lastProcessTime.IsZero() {
+			// Wait for remaining delay time
+			waitTime := delaySeconds - timeSinceLastProcess
+			s.logger.Debug("Webhook queue: Waiting before processing next item",
+				zap.Duration("wait_time", waitTime),
+				zap.Duration("configured_delay", delaySeconds))
+			time.Sleep(waitTime)
+		}
+
+		// Process the webhook based on type
+		switch item.itemType {
+		case "radarr":
+			s.logger.Info("Processing queued Radarr webhook")
+			s.processRadarrWebhook(item.radarr)
+		case "sonarr":
+			s.logger.Info("Processing queued Sonarr webhook")
+			s.processSonarrWebhook(item.sonarr)
+		}
+
+		// Update last process time
+		lastProcessTime = time.Now()
+	}
+
+	// Signal that queue processing is done
+	close(s.queueDone)
 }
 
 // Handlers
@@ -206,27 +256,32 @@ func (s *Server) AuthWebSocket(c *gin.Context) {
 
 			// Handle authentication based on auth_type
 			switch msg.AuthType {
+			case "qr":
+				// Handle QR code authentication
+				s.logger.Info("Processing QR code authentication")
+				s.handleQRAuth(ctx, conn, tgClient, &dispatcher, sessionStorage)
+				return nil
+
 			case "phone":
-				// Request phone number
-				conn.WriteJSON(map[string]any{
-					"type":  "request",
-					"field": "phone_code_hash",
-				})
+				// Handle phone authentication
+				s.logger.Info("Processing phone authentication")
+				s.handlePhoneAuth(ctx, conn, tgClient, msg, sessionStorage)
+				return nil
 
-			case "code":
-				// Process phone code
-				s.logger.Info("Processing phone code")
-				// Code handling would go here
-
-			case "password":
-				// Process 2FA password
+			case "2fa":
+				// Handle 2FA password
 				s.logger.Info("Processing 2FA password")
-				// Password handling would go here
+				// 2FA is handled within phone auth flow
+				conn.WriteJSON(map[string]any{
+					"type":    "error",
+					"message": "2FA must be handled during phone authentication flow",
+				})
+				return nil
 
 			default:
 				conn.WriteJSON(map[string]any{
 					"type":    "error",
-					"message": "Unknown auth type",
+					"message": "Unknown auth type: " + msg.AuthType,
 				})
 			}
 		}
@@ -257,11 +312,8 @@ func (s *Server) sendPosterToChannel(ctx context.Context, posterURL string, titl
 		return 0, fmt.Errorf("telegram client not initialized")
 	}
 
-	// Create connection pool
-	poolSize := int64(s.config.Telegram.PoolSize)
-	if poolSize < 1 {
-		poolSize = 8
-	}
+	// Create connection pool (hardcoded to 8)
+	poolSize := int64(8)
 
 	middlewares := tgc.NewMiddleware(
 		&s.config.Telegram,
@@ -475,6 +527,23 @@ func (s *Server) handleQRAuth(ctx context.Context, conn *websocket.Conn, tgClien
 
 	s.session = sessionDataObj
 
+	// Create and initialize Telegram client from the authenticated session
+	// This allows immediate use of the client without requiring a server restart
+	client, err := auth.CreateClientFromSession(ctx, s.config.Telegram.AppID, s.config.Telegram.AppHash, sessionDataObj, &s.config.Telegram, s.logger)
+	if err != nil {
+		s.logger.Error("QR auth: Failed to create client from session", zap.Error(err))
+		conn.WriteJSON(map[string]any{"type": "error", "message": "failed to initialize client"})
+		return
+	}
+
+	s.tgClient = client
+
+	// Create ClientManager to run client in background
+	// This maintains the connection and keeps the session alive
+	s.clientManager = auth.NewClientManager(client, s.logger)
+
+	s.logger.Info("QR auth: Client initialized and manager started")
+
 	s.logger.Info("QR auth: Sending success message with payload")
 	conn.WriteJSON(map[string]any{
 		"type":    "auth",
@@ -608,6 +677,23 @@ func (s *Server) handlePhoneAuth(ctx context.Context, conn *websocket.Conn, tgCl
 
 		s.session = sessionDataObj
 
+		// Create and initialize Telegram client from the authenticated session
+		// This allows immediate use of the client without requiring a server restart
+		client, err := auth.CreateClientFromSession(ctx, s.config.Telegram.AppID, s.config.Telegram.AppHash, sessionDataObj, &s.config.Telegram, s.logger)
+		if err != nil {
+			s.logger.Error("Phone auth: Failed to create client from session", zap.Error(err))
+			conn.WriteJSON(map[string]any{"type": "error", "message": "failed to initialize client"})
+			return
+		}
+
+		s.tgClient = client
+
+		// Create ClientManager to run client in background
+		// This maintains the connection and keeps the session alive
+		s.clientManager = auth.NewClientManager(client, s.logger)
+
+		s.logger.Info("Phone auth: Client initialized and manager started")
+
 		conn.WriteJSON(map[string]any{
 			"type":    "auth",
 			"payload": s.sessionToResponse(sessionDataObj),
@@ -644,6 +730,23 @@ func (s *Server) handle2FAAuth(ctx context.Context, conn *websocket.Conn, tgClie
 	}
 
 	s.session = sessionDataObj
+
+	// Create and initialize Telegram client from the authenticated session
+	// This allows immediate use of the client without requiring a server restart
+	client, err := auth.CreateClientFromSession(ctx, s.config.Telegram.AppID, s.config.Telegram.AppHash, sessionDataObj, &s.config.Telegram, s.logger)
+	if err != nil {
+		s.logger.Error("2FA auth: Failed to create client from session", zap.Error(err))
+		conn.WriteJSON(map[string]any{"type": "error", "message": "failed to initialize client"})
+		return
+	}
+
+	s.tgClient = client
+
+	// Create ClientManager to run client in background
+	// This maintains the connection and keeps the session alive
+	s.clientManager = auth.NewClientManager(client, s.logger)
+
+	s.logger.Info("2FA auth: Client initialized and manager started")
 
 	conn.WriteJSON(map[string]any{
 		"type":    "auth",
@@ -698,17 +801,65 @@ func (s *Server) createAndSaveSession(ctx context.Context, conn *websocket.Conn,
 }
 
 func (s *Server) Logout(c *gin.Context) {
+	s.logger.Info("Logout request received", zap.Bool("has_client", s.tgClient != nil), zap.Bool("has_session", s.session != nil))
+
+	// Call auth.logOut on Telegram servers to invalidate session remotely
+	if s.tgClient != nil && s.session != nil && s.session.Authenticated {
+		logoutCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+
+		s.logger.Info("Attempting to sign out from Telegram servers via auth.logOut RPC")
+
+		// Run the client to make the logout RPC call
+		err := s.tgClient.Run(logoutCtx, func(ctx context.Context) error {
+			// Call auth.logOut to invalidate session on Telegram servers
+			logOutReq := &tg.AuthLogOutRequest{}
+			logOutResp := &tg.BoolTrue{} // Simple response type that implements bin.Decoder
+
+			if err := s.tgClient.Invoke(ctx, logOutReq, logOutResp); err != nil {
+				s.logger.Warn("Failed to call auth.logOut on Telegram servers", zap.Error(err))
+				// Continue with local cleanup even if remote logout fails
+				return nil
+			}
+			s.logger.Info("Successfully signed out from Telegram servers")
+			return nil
+		})
+
+		if err != nil && err != context.DeadlineExceeded {
+			s.logger.Warn("Error during Telegram logout RPC call", zap.Error(err))
+		}
+	}
+
+	// Stop client manager - this closes the active connection
+	if s.clientManager != nil {
+		s.logger.Info("Stopping client manager to close Telegram connection")
+		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.clientManager.Stop(stopCtx); err != nil {
+			s.logger.Warn("Error stopping client manager", zap.Error(err))
+		}
+		s.clientManager = nil
+	}
+
+	// Delete session files - remove device authorization from local storage
+	s.logger.Info("Deleting session files", zap.String("session_path", s.sessionPath))
 	if err := auth.DeleteSession(s.sessionPath, s.sessionDBPath); err != nil {
-		s.logger.Error("Failed to delete session", zap.Error(err))
+		s.logger.Error("Failed to delete session files", zap.Error(err))
 		c.JSON(500, gin.H{"error": "failed to logout"})
 		return
 	}
 
+	s.logger.Info("Session files deleted successfully")
+
+	// Clear client and session from memory
+	s.tgClient = nil
 	s.session = nil
+
+	s.logger.Info("Device successfully logged out from Telegram and local session deleted")
 
 	c.JSON(200, gin.H{
 		"status":  "logged_out",
-		"message": "Successfully logged out",
+		"message": "Successfully logged out - device removed from Telegram servers and local session terminated",
 	})
 }
 
@@ -720,8 +871,8 @@ func (s *Server) GetSettings(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"app_id":         s.config.Telegram.AppID,
-		"radarr_channel": s.config.Telegram.RadarrChannelID,
-		"sonarr_channel": s.config.Telegram.SonarrChannelID,
+		"radarr_channel": s.config.App.RadarrChannelID,
+		"sonarr_channel": s.config.App.SonarrChannelID,
 		"username":       s.session.Username,
 	})
 }
@@ -762,8 +913,11 @@ func (s *Server) RadarrWebhook(c *gin.Context) {
 		zap.String("imdbId", payload.Movie.ImdbID),
 		zap.Int("tmdbId", payload.Movie.TmdbID))
 
-	// Process webhook asynchronously
-	go s.processRadarrWebhook(&payload)
+	// Queue webhook for sequential processing
+	s.webhookQueue <- webhookQueueItem{
+		itemType: "radarr",
+		radarr:   &payload,
+	}
 
 	c.JSON(202, gin.H{
 		"message": "Radarr webhook queued for processing",
@@ -808,8 +962,11 @@ func (s *Server) SonarrWebhook(c *gin.Context) {
 		zap.String("imdbId", payload.Series.ImdbID),
 		zap.Int("tvdbId", payload.Series.TvdbID))
 
-	// Process webhook asynchronously
-	go s.processSonarrWebhook(&payload)
+	// Queue webhook for sequential processing
+	s.webhookQueue <- webhookQueueItem{
+		itemType: "sonarr",
+		sonarr:   &payload,
+	}
 
 	c.JSON(202, gin.H{
 		"message": "Sonarr webhook queued for processing",
@@ -1001,7 +1158,7 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 		zap.String("filePath", payload.MovieFile.Path))
 
 	// Apply delay to allow filesystem to catch up (especially for rclone mounts)
-	delayTime := time.Duration(s.config.Telegram.DelayTime) * time.Second
+	delayTime := time.Duration(s.config.App.DelayTime) * time.Second
 	s.logger.Info("Radarr webhook: waiting before processing",
 		zap.Duration("delay", delayTime))
 	time.Sleep(delayTime)
@@ -1032,7 +1189,7 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 
 	// Fetch and send poster image and description if available (only if configured)
 	posterMsgID := 0
-	if s.config.Telegram.SendMovieDetailsMessage {
+	if s.config.App.SendMovieDetailsMessage {
 		metadata, err := s.fetchRadarrMetadata(ctx, payload.Movie.TmdbID)
 		if err == nil && metadata != nil {
 			// Find poster URL
@@ -1054,7 +1211,7 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 				if err == nil {
 					actualFileSize = fileInfo.Size()
 				}
-				msgID, err := s.sendPosterToChannel(ctx, posterURL, metadata.Title, metadata.ImdbID, metadata.Year, metadata.Overview, s.config.Telegram.RadarrChannelID, metadata.Runtime, metadata.Genres, metadata.MovieRatings.Imdb.Value, filename, payload.MovieFile.Quality, actualFileSize)
+				msgID, err := s.sendPosterToChannel(ctx, posterURL, metadata.Title, metadata.ImdbID, metadata.Year, metadata.Overview, s.config.App.RadarrChannelID, metadata.Runtime, metadata.Genres, metadata.MovieRatings.Imdb.Value, filename, payload.MovieFile.Quality, actualFileSize)
 				if err != nil {
 					s.logger.Error("Failed to send poster and description", zap.Error(err))
 					posterMsgID = 0
@@ -1070,7 +1227,7 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 	}
 
 	// Process file upload with metadata for filename shortening
-	s.uploadWebhookFile(ctx, filePath, payload.Movie.Title, payload.Movie.ImdbID, payload.Movie.TmdbID, "radarr", s.config.Telegram.RadarrChannelID, &uploader.ShortenerConfig{
+	s.uploadWebhookFile(ctx, filePath, payload.Movie.Title, payload.Movie.ImdbID, payload.Movie.TmdbID, "radarr", s.config.App.RadarrChannelID, &uploader.ShortenerConfig{
 		MovieTitle:   payload.Movie.Title,
 		Quality:      payload.MovieFile.Quality,
 		Format:       payload.MovieFile.MediaInfo.VideoCodec,
@@ -1095,7 +1252,7 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 		zap.String("filePath", payload.EpisodeFile.Path))
 
 	// Apply delay to allow filesystem to catch up (especially for rclone mounts)
-	delayTime := time.Duration(s.config.Telegram.DelayTime) * time.Second
+	delayTime := time.Duration(s.config.App.DelayTime) * time.Second
 	s.logger.Info("Sonarr webhook: waiting before processing",
 		zap.Duration("delay", delayTime))
 	time.Sleep(delayTime)
@@ -1126,7 +1283,7 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 
 	// Fetch and send poster image and description if available (only if configured)
 	posterMsgID := 0
-	if s.config.Telegram.SendSeriesDetailsMessage {
+	if s.config.App.SendSeriesDetailsMessage {
 		metadata, err := s.fetchSonarrMetadata(ctx, payload.Series.TvdbID)
 		if err == nil && metadata != nil {
 			// Find poster URL
@@ -1154,7 +1311,7 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 				if err == nil {
 					actualFileSize = fileInfo.Size()
 				}
-				msgID, err := s.sendPosterToChannel(ctx, posterURL, metadata.Title, metadata.ImdbID, metadata.Year, episodeOverview, s.config.Telegram.SonarrChannelID, metadata.Runtime, metadata.Genres, metadata.Rating.Value, filename, payload.EpisodeFile.Quality, actualFileSize)
+				msgID, err := s.sendPosterToChannel(ctx, posterURL, metadata.Title, metadata.ImdbID, metadata.Year, episodeOverview, s.config.App.SonarrChannelID, metadata.Runtime, metadata.Genres, metadata.Rating.Value, filename, payload.EpisodeFile.Quality, actualFileSize)
 				if err != nil {
 					s.logger.Error("Failed to send poster and description", zap.Error(err))
 					posterMsgID = 0
@@ -1174,7 +1331,7 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 	if len(payload.Episodes) > 0 {
 		episodeOverview = payload.Episodes[0].Overview
 	}
-	s.uploadWebhookFile(ctx, filePath, payload.Series.Title, payload.Series.ImdbID, payload.Series.TvdbID, "sonarr", s.config.Telegram.SonarrChannelID, nil, payload.EpisodeFile.Quality, payload.EpisodeFile.Size, episodeOverview, payload.Series.Year, posterMsgID)
+	s.uploadWebhookFile(ctx, filePath, payload.Series.Title, payload.Series.ImdbID, payload.Series.TvdbID, "sonarr", s.config.App.SonarrChannelID, nil, payload.EpisodeFile.Quality, payload.EpisodeFile.Size, episodeOverview, payload.Series.Year, posterMsgID)
 }
 
 // uploadWebhookFile handles the common file upload logic for both Radarr and Sonarr webhooks
@@ -1213,9 +1370,9 @@ func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title s
 		maxAllowedSizeGB = 2.0 // 2GB for free
 	}
 
-	if s.config.Telegram.ArchiveSplitSize > 0 {
+	if s.config.App.ArchiveSplitSize > 0 {
 		// Use custom split size from config, but enforce account type limit
-		configSizeGB := s.config.Telegram.ArchiveSplitSize
+		configSizeGB := s.config.App.ArchiveSplitSize
 		if configSizeGB > maxAllowedSizeGB {
 			s.logger.Warn("Configured archive split size exceeds account limit, clamping to max allowed",
 				zap.Float64("configured_size_gb", configSizeGB),
@@ -1284,11 +1441,8 @@ func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string,
 // posterMessageID: if > 0, archive parts will be sent as replies to this message
 func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, title string, source string, isPremium bool, sizeLimit int64, channelID int64, metadata *uploader.ShortenerConfig, posterMessageID int) {
 	// Create messenger for archive progress updates
-	poolSize := int64(s.config.Telegram.PoolSize)
-	if poolSize < 1 {
-		poolSize = 8
-	}
-
+	// Connection pool size (hardcoded to 8)
+	var poolSize int64 = 8
 	middlewares := tgc.NewMiddleware(
 		&s.config.Telegram,
 		tgc.WithFloodWait(),
@@ -1305,11 +1459,11 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 	// Send initial message
 	fileName := filepath.Base(filePath)
 	startMsg := fmt.Sprintf(
-		"<b>📦 %s Webhook Upload</b>\n\n"+
+		"<b>📦 Splitting file into archives</b>\n\n"+
 			"<b>Title:</b> %s\n"+
 			"<b>File:</b> %s\n\n"+
 			"<b>Preparing Archive Parts...</b>",
-		strings.ToUpper(source), title, fileName,
+		title, fileName,
 	)
 
 	s.logger.Info("Sending initial webhook message to channel", zap.String("title", title), zap.String("source", source))
@@ -1320,7 +1474,7 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 	}
 
 	// Split file with progress callback using configured archive format
-	archiver := uploader.NewArchiver(s.config.Telegram.SplitArchiveFormat, s.logger)
+	archiver := uploader.NewArchiver(s.config.App.SplitArchiveFormat, s.logger)
 
 	// Create temp directory at project root using the config helper
 	tempArchiveDir, err := config.GetTempDir()
@@ -1331,17 +1485,17 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 		return
 	}
 
-	s.logger.Info("Starting archive split for webhook", zap.String("file", filePath), zap.String("source", source), zap.String("format", s.config.Telegram.SplitArchiveFormat))
+	s.logger.Info("Starting archive split for webhook", zap.String("file", filePath), zap.String("source", source), zap.String("format", s.config.App.SplitArchiveFormat))
 
 	// Track last update time for progress messages (update interval from config)
-	refreshInterval := time.Duration(s.config.Telegram.MessageRefreshInterval) * time.Second
-	s.logger.Info("Message refresh interval set", zap.Duration("interval", refreshInterval), zap.Int("config_value", s.config.Telegram.MessageRefreshInterval))
+	refreshInterval := time.Duration(s.config.App.MessageRefreshInterval) * time.Second
+	s.logger.Info("Message refresh interval set", zap.Duration("interval", refreshInterval), zap.Int("config_value", s.config.App.MessageRefreshInterval))
 	lastUpdateTime := time.Now()
 	lastInfoLogTime := time.Now()
 	var lastArchiveProgressMsg string
 
 	// Split file with progress callback for Telegram updates
-	archiveParts, err := archiver.SplitFile(filePath, tempArchiveDir, 0, isPremium, s.config.Telegram.ArchiveSplitSize, func(bytesProcessed, totalBytes int64, percent int) {
+	archiveParts, err := archiver.SplitFile(filePath, tempArchiveDir, 0, isPremium, s.config.App.ArchiveSplitSize, func(bytesProcessed, totalBytes int64, percent int) {
 		// Only log periodically (every 10%) to avoid flooding logs
 		if percent%10 == 0 {
 			s.logger.Debug("Webhook archive split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
@@ -1358,7 +1512,7 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 		if now.Sub(lastUpdateTime) >= refreshInterval || percent == 100 {
 			s.logger.Debug("Updating archive progress message", zap.Int("percent", percent), zap.Duration("time_since_update", now.Sub(lastUpdateTime)), zap.Duration("refresh_interval", refreshInterval))
 			lastUpdateTime = now
-			progressMsg := formatArchiveProgressMessage(fileName, source, title, s.config.Telegram.SplitArchiveFormat, percent, bytesProcessed, totalBytes)
+			progressMsg := formatArchiveProgressMessage(fileName, source, title, s.config.App.SplitArchiveFormat, percent, bytesProcessed, totalBytes)
 
 			// Only update if message content actually changed
 			if progressMsg == lastArchiveProgressMsg {
@@ -1436,11 +1590,8 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 	// Use the already-running client (already authenticated via main client manager)
 	telegramClient := s.tgClient
 
-	// Create connection pool with middlewares
-	poolSize := int64(s.config.Telegram.PoolSize)
-	if poolSize < 1 {
-		poolSize = 8
-	}
+	// Connection pool size (hardcoded to 8)
+	var poolSize int64 = 8
 
 	middlewares := tgc.NewMiddleware(
 		&s.config.Telegram,
@@ -1496,7 +1647,7 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 		}
 
 		// Track last update time for progress messages (update interval configurable from config)
-		refreshInterval := time.Duration(s.config.Telegram.MessageRefreshInterval) * time.Second
+		refreshInterval := time.Duration(s.config.App.MessageRefreshInterval) * time.Second
 		lastUpdateTime := time.Now()
 		uploadStartTime := time.Now()
 		lastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)

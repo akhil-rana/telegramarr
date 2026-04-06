@@ -3,10 +3,17 @@ import './LoggedIn.css'
 import WebhookTest from './WebhookTest'
 
 export default function LoggedIn({ user, onLogout }) {
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
   const username = user.username || 'User'
   const firstName = user.first_name || ''
   const lastName = user.last_name || ''
   const displayName = `${firstName} ${lastName}`.trim() || username
+
+  const handleLogoutClick = async () => {
+    setIsLoggingOut(true)
+    await onLogout()
+    setIsLoggingOut(false)
+  }
 
   return (
     <div className="app logged-in">
@@ -24,16 +31,29 @@ export default function LoggedIn({ user, onLogout }) {
             )}
           </div>
 
-          <button className="btn-logout" onClick={onLogout}>
-            Logout
+          <button 
+            className="btn-logout" 
+            onClick={handleLogoutClick}
+            disabled={isLoggingOut}
+          >
+            {isLoggingOut ? (
+              <>
+                <span className="logout-spinner"></span>
+                Logging out...
+              </>
+            ) : (
+              'Logout'
+            )}
           </button>
 
           <p className="footer-text">Telegramarr is ready for file uploads</p>
         </div>
 
-        <div className="webhook-test-container">
-          <WebhookTest apiBaseUrl="" />
-        </div>
+        {import.meta.env.DEV && (
+          <div className="webhook-test-container">
+            <WebhookTest apiBaseUrl="" />
+          </div>
+        )}
       </div>
     </div>
   )

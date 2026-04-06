@@ -35,7 +35,6 @@ func Load(configPath string, logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("telegram.delay_time", 30)
 	viper.SetDefault("paths.radarr_movies", "./movies/")
 	viper.SetDefault("paths.sonarr_tvshows", "./tvshows/")
-	viper.SetDefault("tmdb.enabled", false)
 	viper.SetDefault("telegram.archive_split_size", 0)
 
 	if err := viper.ReadInConfig(); err != nil {
@@ -54,23 +53,22 @@ func Load(configPath string, logger *zap.Logger) (*Config, error) {
 	if cfg.Telegram.AppHash == "" {
 		return nil, fmt.Errorf("telegram.app_hash is required")
 	}
-	if cfg.Telegram.RadarrChannelID == 0 {
+	if cfg.App.RadarrChannelID == 0 {
 		return nil, fmt.Errorf("telegram.radarr_channel_id is required")
 	}
-	if cfg.Telegram.SonarrChannelID == 0 {
+	if cfg.App.SonarrChannelID == 0 {
 		return nil, fmt.Errorf("telegram.sonarr_channel_id is required")
 	}
 
 	logger.Info("Config loaded",
 		zap.Int("app_id", cfg.Telegram.AppID),
-		zap.Int64("radarr_channel_id", cfg.Telegram.RadarrChannelID),
-		zap.Int64("sonarr_channel_id", cfg.Telegram.SonarrChannelID),
+		zap.Int64("radarr_channel_id", cfg.App.RadarrChannelID),
+		zap.Int64("sonarr_channel_id", cfg.App.SonarrChannelID),
 		zap.Int("server_port", cfg.Server.Port),
-		zap.Int("message_refresh_interval", cfg.Telegram.MessageRefreshInterval),
-		zap.Int("delay_time", cfg.Telegram.DelayTime),
+		zap.Int("message_refresh_interval", cfg.App.MessageRefreshInterval),
+		zap.Int("delay_time", cfg.App.DelayTime),
 		zap.String("radarr_movies_path", cfg.Paths.RadarrMoviesPath),
 		zap.String("sonarr_tvshows_path", cfg.Paths.SonarrTVShowsPath),
-		zap.Bool("tmdb_enabled", cfg.TMDB.Enabled),
 	)
 
 	return &cfg, nil

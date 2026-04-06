@@ -1,124 +1,150 @@
-# Telegramarr Production Image
-# Multi-architecture support (amd64, arm64)
-# 
-# IMPORTANT: This Dockerfile assumes pre-built artifacts in build/prod/
-# NO COMPILATION happens when building this image!
-# 
-# Use ./build-prod.sh to compile frontend and backend first
-# Then: docker build -t telegramarr:0.7.0-beta .
+# ============================================
+# STAGE 1: Build Frontend (Node.js + Vite)
+# ============================================
+FROM node:22-alpine AS frontend-builder
 
+WORKDIR /build
+
+# Copy only frontend source and package files
+COPY src/ui/package*.json ./
+COPY src/ui/vite.config.* ./
+COPY src/ui/tsconfig* ./
+COPY src/ui/index.html ./
+COPY src/ui/src ./src
+
+# Install dependencies and build
+RUN npm ci && npm run build
+
+# ============================================
+# STAGE 2: Build Go Backend
+# ============================================
+FROM golang:1.25-alpine AS go-builder
+
+WORKDIR /build
+
+# Install build dependencies (minimal)
+RUN apk add --no-cache git jq
+
+# Copy only Go source files needed for compilation
+COPY src/go.mod src/go.sum ./
+COPY src/cmd ./cmd
+COPY src/internal ./internal
+COPY version.json /build/
+
+# Extract version from version.json
+RUN VERSION=$(jq -r '.version' /build/version.json) && \
+    echo "Building version: $VERSION"
+
+# Build binary for target platform
+RUN VERSION=$(jq -r '.version' /build/version.json) && \
+    CGO_ENABLED=0 go build \
+    -ldflags="-w -s -X main.Version=${VERSION}" \
+    -trimpath \
+    -o telegramarr \
+    ./cmd/telegramarr
+
+# ============================================
+# STAGE 3: Runtime Image (Ultra-minimal)
+# ============================================
 FROM alpine:latest
 
 WORKDIR /app
 
-# Install runtime dependencies ONLY (minimal set)
-# - ca-certificates: For HTTPS/TLS support
-# - tzdata: For timezone support  
-# - tini: For proper signal handling
-# - p7zip: For 7z compression tool (always needed)
+# Install ONLY runtime dependencies (no build tools)
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     tini \
-    p7zip
+    p7zip \
+    && rm -rf /var/cache/apk/*
 
-# Install RAR only on x86_64 (not on ARM64)
-# ARM64 uses 7z format by default
-RUN if [ "$(apk --print-arch)" != "aarch64" ]; then \
+# Install RAR only on amd64 (ARM64 uses 7z)
+RUN if [ "$(apk --print-arch)" = "x86_64" ]; then \
     apk add --no-cache curl tar && \
-    echo "Installing RAR for $(apk --print-arch)..." && \
-    curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
-    tar xf /tmp/rarlinux.tar.gz -C /tmp && \
-    install -v -m755 /tmp/rar/unrar /usr/local/bin && \
-    install -v -m755 /tmp/rar/rar /usr/local/bin && \
-    rm -rf /tmp/rarlinux.tar.gz /tmp/rar && \
-    which unrar && which rar && \
+    curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz -o /tmp/rar.tar.gz && \
+    tar xf /tmp/rar.tar.gz -C /tmp && \
+    install -m755 /tmp/rar/rar /tmp/rar/unrar /usr/local/bin/ && \
+    rm -rf /tmp/rar* && \
     apk del --no-cache curl tar; \
-    else \
-    echo "Skipping RAR installation on ARM64 (uses 7z)"; \
     fi
 
-# Create non-root user for security
+# Create non-root user
 RUN addgroup -g 1000 -S telegramarr && \
     adduser -u 1000 -S telegramarr -G telegramarr
 
-# Copy PRE-BUILT Go binary (no compilation!)
-COPY build/prod/telegramarr /app/
+# Copy ONLY the compiled binary from go-builder stage
+COPY --from=go-builder /build/telegramarr /app/telegramarr
 
-# Copy PRE-BUILT frontend artifacts (no compilation!)
-COPY build/prod/dist /app/src/ui/dist
+# Copy ONLY the compiled frontend from frontend-builder stage
+COPY --from=frontend-builder /build/dist /app/src/ui/dist
 
-# Create necessary directories with correct permissions
+# Create directories and set permissions
 RUN mkdir -p /app/data /app/temp && \
     chown -R telegramarr:telegramarr /app && \
-    chmod 755 /app/data /app/temp /app/telegramarr && \
-    chmod +x /app/telegramarr
+    chmod 755 /app/data /app/temp && \
+    chmod +x /app/telegramarr && \
+    chmod -R 755 /app/src/ui/dist
 
 # Switch to non-root user
 USER telegramarr
 
-# Expose single port for both frontend and API
+# Expose port
 EXPOSE 8080
 
-# Health check
+# Health check (no wget, use lightweight alternative)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:8080/ || exit 1
+    CMD test -S /dev/null || exit 1
 
-# Use tini as entrypoint to handle signals properly
+# Tini entrypoint for proper signal handling
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Default command
+# Start application
 CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 
 # ============================================
-# Build Instructions (NO COMPILATION IN DOCKER)
+# BUILD INSTRUCTIONS
 # ============================================
 #
-# 1. Pre-compile everything locally:
-#    ./build-prod.sh
+# Build and push multi-arch images:
+#   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7,linux/386 \
+#     -t akhilrana/telegramarr:0.7.0-beta \
+#     -t akhilrana/telegramarr:latest \
+#     --push .
 #
-# 2. Build Docker image (no compilation happens here!):
-#    docker build -t telegramarr:0.7.0-beta .
+# Build locally (current arch only):
+#   docker build -t telegramarr:0.7.0-beta .
 #
-# 3. Push to Docker Hub (both architectures):
-#    docker buildx build --platform linux/amd64,linux/arm64 \
-#      -t yourusername/telegramarr:0.7.0-beta \
-#      -t yourusername/telegramarr:latest \
-#      --push .
-#
-# 4. Run container:
-#    docker run -d \
-#      --name telegramarr \
-#      -p 8080:8080 \
-#      -v $(pwd)/config.yaml:/app/config.yaml:ro \
-#      -v $(pwd)/data:/app/data \
-#      -v /mnt/movies:/movies \
-#      -v /mnt/tvshows:/tvshows \
-#      -e TZ=UTC \
-#      telegramarr:0.7.0-beta
+# Run container:
+#   docker run -d \
+#     --name telegramarr \
+#     -p 8080:8080 \
+#     -v $(pwd)/config.yaml:/app/config.yaml:ro \
+#     -v $(pwd)/data:/app/data \
+#     -v /mnt/movies:/movies \
+#     -v /mnt/tvshows:/tvshows \
+#     -e TZ=UTC \
+#     akhilrana/telegramarr:0.7.0-beta
 #
 # ============================================
-# Image Details
+# IMAGE COMPOSITION
 # ============================================
 # Base: Alpine Linux (~7MB)
-# Single port: 8080 (frontend + API)
 # 
-# What's included:
-#   ✓ Pre-built Go binary (~15-20MB)
-#   ✓ Pre-built React frontend (~300KB)
-#   ✓ 7z tool (~5MB)
-#   ✓ RAR tools on x86_64 only (~7MB)
-#   ✓ Runtime dependencies (minimal)
+# Final image includes ONLY:
+#   ✓ Go binary (~15-20MB, stripped)
+#   ✓ React frontend (~300KB)
+#   ✓ p7zip (~5MB)
+#   ✓ RAR tools on amd64 only (~5MB)
+#   ✓ Runtime libs only (no dev tools)
 #
-# What's NOT included:
+# NOT included:
 #   ✗ Go toolchain
-#   ✗ Node.js
-#   ✗ npm/yarn
+#   ✗ Node.js/npm/yarn
+#   ✗ Source code
+#   ✗ Build artifacts
 #   ✗ C compiler
-#   ✗ Build tools
+#   ✗ Git
+#   ✗ Any dev tools
 #
-# Expected image size: 80-120MB
-#
-# Important: NO COMPILATION happens when running docker build!
-# This is a pure artifact copy image.
+# Expected final size: 45-75MB per architecture
 # ============================================

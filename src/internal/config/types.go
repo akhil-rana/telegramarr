@@ -2,69 +2,53 @@ package config
 
 type Config struct {
 	Telegram TelegramConfig `mapstructure:"telegram" validate:"required"`
+	App      AppConfig      `mapstructure:"app"`
 	Paths    PathsConfig    `mapstructure:"paths"`
-	TMDB     TMDBConfig     `mapstructure:"tmdb"`
-	Radarr   RadarrConfig   `mapstructure:"radarr"`
-	Sonarr   SonarrConfig   `mapstructure:"sonarr"`
 	Server   ServerConfig   `mapstructure:"server"`
 	Logging  LoggingConfig  `mapstructure:"logging"`
 }
 
+// TelegramConfig contains Telegram API authentication settings only
 type TelegramConfig struct {
-	AppID           int    `mapstructure:"app_id" validate:"required"`
-	AppHash         string `mapstructure:"app_hash" validate:"required"`
-	RadarrChannelID int64  `mapstructure:"radarr_channel_id" validate:"required"`
-	SonarrChannelID int64  `mapstructure:"sonarr_channel_id" validate:"required"`
-	DeviceModel     string `mapstructure:"device_model" default:"Desktop"`
-	SystemVersion   string `mapstructure:"system_version" default:"Windows 11"`
-	AppVersion      string `mapstructure:"app_version" default:"6.7.0"`
-	LangPack        string `mapstructure:"lang_pack" default:"tdesktop"`
-	SystemLangCode  string `mapstructure:"system_lang_code" default:"en-US"`
-	LangCode        string `mapstructure:"lang_code" default:"en"`
+	AppID          int    `mapstructure:"app_id" validate:"required"`
+	AppHash        string `mapstructure:"app_hash" validate:"required"`
+	DeviceModel    string `mapstructure:"device_model" default:"Desktop"`
+	SystemVersion  string `mapstructure:"system_version" default:"Windows 11"`
+	AppVersion     string `mapstructure:"app_version" default:"6.7.1"`
+	LangPack       string `mapstructure:"lang_pack" default:"tdesktop"`
+	SystemLangCode string `mapstructure:"system_lang_code" default:"en-US"`
+	LangCode       string `mapstructure:"lang_code" default:"en"`
 
 	// Rate limiting configuration (matching teldrive architecture)
 	RateLimit  bool `mapstructure:"rate_limit" default:"false"`
 	Rate       int  `mapstructure:"rate" default:"100"`
 	RateBurst  int  `mapstructure:"rate_burst" default:"5"`
 	MaxRetries int  `mapstructure:"max_retries" default:"5"`
+}
 
-	// Upload performance configuration
-	UploadThreads  int `mapstructure:"upload_threads" default:"8"`
-	UploadPartSize int `mapstructure:"upload_part_size" default:"512"`
-	PoolSize       int `mapstructure:"pool_size" default:"8"`
+// AppConfig contains application settings for uploads and messaging
+type AppConfig struct {
+	// Separate channels for Radarr and Sonarr webhooks
+	RadarrChannelID int64 `mapstructure:"radarr_channel_id" validate:"required"`
+	SonarrChannelID int64 `mapstructure:"sonarr_channel_id" validate:"required"`
 
-	// Message refresh interval for upload progress (in seconds)
-	MessageRefreshInterval int `mapstructure:"message_refresh_interval" default:"2"`
+	// Message refresh interval for upload progress updates (in seconds)
+	MessageRefreshInterval int `mapstructure:"message_refresh_interval" default:"5"`
 
-	// Delay time before processing webhook (in seconds) - allows filesystem to catch up, especially for rclone mounts
+	// Delay before processing webhook (in seconds) - allows filesystem to catch up for rclone mounts
 	DelayTime int `mapstructure:"delay_time" default:"30"`
 
 	// Archive format for splitting large files (rar or 7z)
 	SplitArchiveFormat string `mapstructure:"split_archive_format" default:"rar"`
 
-	// Send movie details with poster message for Radarr uploads (enabled by default)
-	SendMovieDetailsMessage bool `mapstructure:"send_movie_details_message" default:"true"`
-
-	// Send series details with poster message for Sonarr uploads (disabled by default)
+	// Send movie/series details message with poster image before file upload
+	SendMovieDetailsMessage  bool `mapstructure:"send_movie_details_message" default:"true"`
 	SendSeriesDetailsMessage bool `mapstructure:"send_series_details_message" default:"false"`
 
-	// Archive split size in GB (for splitting large files with RAR/7z)
+	// Archive split size in GB for splitting large files (0 = use maximum according to account type)
 	// If 0, uses maximum according to account type (4GB for premium, 2GB for free)
 	// If > 0, uses this value (max allowed: 4GB, supports decimals like 1.5)
 	ArchiveSplitSize float64 `mapstructure:"archive_split_size" default:"0"`
-}
-
-type TMDBConfig struct {
-	// Enable/disable TMDB movie details and poster fetching
-	Enabled bool `mapstructure:"enabled" default:"false"`
-	// API key for TMDB (required if enabled is true)
-	APIKey string `mapstructure:"api_key"`
-	// Base URL for TMDB images (e.g., https://image.tmdb.org/t/p/)
-	ImageBaseURL string `mapstructure:"image_base_url" default:"https://image.tmdb.org/t/p/"`
-	// Poster size (w92, w154, w185, w342, w500, w780, original)
-	PosterSize string `mapstructure:"poster_size" default:"w342"`
-	// Backdrop size (w300, w780, w1280, original)
-	BackdropSize string `mapstructure:"backdrop_size" default:"w780"`
 }
 
 type ServerConfig struct {
@@ -82,18 +66,4 @@ type PathsConfig struct {
 	RadarrMoviesPath string `mapstructure:"radarr_movies" default:"./movies/"`
 	// Path where Sonarr stores TV shows (with trailing slash)
 	SonarrTVShowsPath string `mapstructure:"sonarr_tvshows" default:"./tvshows/"`
-}
-
-type RadarrConfig struct {
-	// Radarr instance URL (e.g., "http://localhost:7878")
-	URL string `mapstructure:"url" default:"http://localhost:7878"`
-	// Radarr API key (optional for public API endpoints)
-	APIKey string `mapstructure:"api_key"`
-}
-
-type SonarrConfig struct {
-	// Sonarr instance URL (e.g., "http://localhost:8989")
-	URL string `mapstructure:"url" default:"http://localhost:8989"`
-	// Sonarr API key (optional for public API endpoints)
-	APIKey string `mapstructure:"api_key"`
 }

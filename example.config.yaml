@@ -1,11 +1,62 @@
+# Telegramarr - Webhook to Telegram Bridge for Radarr & Sonarr
+# This configuration file sets up the connection to Telegram and controls upload behavior
+
+
+# ========================================================================
+# APPLICATION CONFIGURATION
+# ========================================================================
+app:
+  # To get a Telegram channel ID, you can use a bot like @getidsbot
+  # forward any message from channel to the bot and it will reply with the channel ID
+  # remove the (-/+)100 from starting of the ID (if present) to get the correct ID.
+  radarr_channel_id: 0000000000            # Telegram channel for Radarr movie uploads
+  sonarr_channel_id: 0000000000            # Telegram channel for Sonarr episode uploads
+  
+  # Progress message updates
+  message_refresh_interval: 5              # Update progress message every N seconds (default: 5)
+  
+  # Webhook processing delay
+  delay_time: 30                           # Wait N seconds after webhook before processing
+                                           # Useful for rclone mounts that need time to sync
+  
+  # Archive splitting configuration
+  split_archive_format: "rar"              # Format: "rar" (recommended) or "7z"
+                                           # arm64/armv7 users must use "7z" as "rar" is not supported on those platforms
+  archive_split_size: 0                    # Split size in GB:
+                                           #   0 = use account default (4GB premium, 2GB free)
+                                           #   1.5, 2, 3, 4 = custom size (max: 4GB)
+  
+  # Poster and metadata messages
+  send_movie_details_message: true         # Send movie poster + details before upload (Radarr)
+  send_series_details_message: false       # Send series poster + details before upload (Sonarr)
+
+
+# ========================================================================
+# FILE PATHS
+# ========================================================================
+paths:
+  radarr_movies: "./movies/"               # Path where Radarr stores movies (include trailing slash)
+  sonarr_tvshows: "./tvshows/"             # Path where Sonarr stores TV shows (include trailing slash)
+
+
+# ========================================================================
+# WEB SERVER CONFIGURATION
+# ========================================================================
+server:
+  port: 8080                               # Web server port (default: 8080)
+  host: 0.0.0.0                            # Listen on all network interfaces (default: 0.0.0.0)
+
+
+# ========================================================================
+# TELEGRAM API CONFIGURATION
+# ========================================================================
 telegram:
+  # API credentials - these are the OFFICIAL Telegram desktop app credentials (no need to change)
+  # If you want to use your own app ID and hash, get them from https://my.telegram.org/apps
   app_id: 2040
   app_hash: "b18441a1ff607e10a989891a5462e627"
   
-  # Separate channels for Radarr and Sonarr webhooks
-  radarr_channel_id: 00000000001    # Telegram chat/channel ID for Radarr notifications
-  sonarr_channel_id: 00000000002    # Telegram chat/channel ID for Sonarr notifications
-  
+  # Device identification (used for Telegram API)
   device_model: "Desktop"
   system_version: "Windows 11"
   app_version: "6.7.1"
@@ -13,42 +64,17 @@ telegram:
   system_lang_code: "en-US"
   lang_code: "en"
   
-  # Rate limiting configuration (matching teldrive architecture)
-  rate_limit: true          # Set to true to enable global rate limiting (default: false for max speed)
-  rate: 100                  # Rate limit interval in milliseconds (default: 100ms)
-  rate_burst: 5              # Burst capacity for rate limiting (default: 5 requests)
-  max_retries: 5             # Maximum retry attempts on Telegram errors (default: 5)
-  
-  # Upload performance configuration
-  upload_threads: 8          # Number of parallel upload threads (default: 8, range: 1-16)
-  upload_part_size: 512      # Upload chunk size in KB (default: 512, range: 256-2048)
-  pool_size: 8               # Connection pool size for concurrent uploads (default: 8, range: 1-32)
-  
-  # Message refresh interval for upload progress updates (in seconds)
-  message_refresh_interval: 5        # How often to update upload progress message (default: 5 seconds)
-  
-  # Delay before processing webhook (in seconds) - allows filesystem to catch up for rclone mounts
-  delay_time: 30             # Default: 30 seconds
-  
-  # Archive format for splitting large files (rar or 7z)
-  split_archive_format: "rar"        # Format to use when splitting large files: "rar" or "7z" (default: "rar")
-  
-  # Archive split size in GB for splitting large files (0 = use maximum according to account type)
-  archive_split_size: 0              # Split size: 0 = 4GB for premium/2GB for free, or set custom value (e.g., 1.5, 3, 4, max: 4GB)
-  
-  # Send movie/series details message with poster image before file upload
-  send_movie_details_message: true   # Send movie poster and details for Radarr uploads (default: true)
-  send_series_details_message: false # Send series poster and details for Sonarr uploads (default: false)
+  # Rate limiting configuration
+  rate_limit: true               # Disable rate limiting for faster uploads (set to true to enable)
+                                 # premium accounts can set to false for faster uploads
+  rate: 80                       # Rate limit interval in milliseconds (default: 100ms)
+  rate_burst: 8                  # Burst capacity for rate limiting (default: 5 requests)
+  max_retries: 5                 # Maximum retry attempts on Telegram errors (default: 5)
 
-# File paths for Radarr and Sonarr
-paths:
-  radarr_movies: "./movies/"         # Path where Radarr stores movies (with trailing slash)
-  sonarr_tvshows: "./tvshows/"       # Path where Sonarr stores TV shows (with trailing slash)
 
-server:
-  port: 8080
-  host: 0.0.0.0
-
+# ========================================================================
+# LOGGING CONFIGURATION
+# ========================================================================
 logging:
-  level: info
-  format: json
+  level: info                              # Log level: debug, info, warn, error (default: info)
+  format: json                             # Log format: json (structured) or text

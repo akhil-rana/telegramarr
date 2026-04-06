@@ -29,10 +29,17 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' })
-      setAuthenticated(false)
-      setUser(null)
-      checkAuth()
+      const response = await fetch('/api/auth/logout', { method: 'POST' })
+      const data = await response.json()
+      console.log('Logout response:', data)
+      
+      if (response.ok) {
+        setAuthenticated(false)
+        setUser(null)
+        await checkAuth()
+      } else {
+        console.error('Logout failed:', data.error)
+      }
     } catch (error) {
       console.error('Failed to logout:', error)
     }

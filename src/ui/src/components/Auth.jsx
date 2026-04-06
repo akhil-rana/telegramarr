@@ -331,7 +331,12 @@ export default function Auth({ onAuthSuccess }) {
         {step === 'qr' && (
           <div className="auth-step">
             <p className="step-description">Scan with Telegram</p>
-            {qrCode && (
+            {!qrCode ? (
+              <div className="qr-loader">
+                <div className="spinner"></div>
+                <p className="loader-text">Generating QR code...</p>
+              </div>
+            ) : (
               <div className="qr-container">
                 <img src={qrCode} alt="QR Code" className="qr-code" />
               </div>

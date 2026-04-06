@@ -83,8 +83,8 @@ func main() {
 	if session != nil && session.Authenticated {
 		fmt.Printf("\n✓ Authenticated as: @%s\n", session.Username)
 		fmt.Printf("  User ID: %d\n", session.UserID)
-		fmt.Printf("  Radarr Channel: %d\n", cfg.Telegram.RadarrChannelID)
-		fmt.Printf("  Sonarr Channel: %d\n", cfg.Telegram.SonarrChannelID)
+		fmt.Printf("  Radarr Channel: %d\n", cfg.App.RadarrChannelID)
+		fmt.Printf("  Sonarr Channel: %d\n", cfg.App.SonarrChannelID)
 		fmt.Println("\n✓ Ready for webhooks!")
 	} else {
 		fmt.Println("\n✗ Not authenticated")

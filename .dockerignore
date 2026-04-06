@@ -16,10 +16,8 @@ data/
 /movies
 /tvshows
 
-# Build artifacts (exclude all but prod)
-build/*
-!build/prod/
-!build/prod/**
+# All build artifacts (Docker will compile)
+build/
 /bin
 
 # Go build artifacts
@@ -44,11 +42,14 @@ Thumbs.db
 # Docker
 docker-compose.override.yml
 
-# Node - keep source, exclude build artifacts only
-!src/
-!src/ui/
+# Node modules (will be installed in Docker)
 src/ui/node_modules/
-src/ui/dist/
 src/ui/.next/
 src/ui/coverage/
 src/ui/.vite/
+
+# Only keep source code needed for Docker build
+# - src/cmd/* (Go entry points)
+# - src/internal/* (Go packages)
+# - src/ui/src/* (React source)
+# - Package files and configs are included by default
