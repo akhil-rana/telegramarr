@@ -25,12 +25,10 @@ RUN apk add --no-cache \
 
 # Copy RAR binaries from rar-on-arm image
 COPY --from=rar /usr/bin/rar /usr/local/bin/rar
-COPY --from=rar /usr/bin/unrar /usr/local/bin/unrar
 
-# Verify RAR tools are available
-RUN which rar && which unrar && \
-    rar 2>&1 | head -2 && \
-    unrar 2>&1 | head -2
+# Verify RAR tool is available
+RUN which rar && \
+    rar 2>&1 | head -2
 
 WORKDIR /app
 
