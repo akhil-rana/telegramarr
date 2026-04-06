@@ -172,10 +172,13 @@ env.py
 teldrive/
 build/
 test/
-telegramarr
+/telegramarr
+bin/telegramarr
 config.yaml
 *.yaml
 
-# BUT DO include package.json files (needed for builds)
+# BUT DO include package.json files and cmd directory (needed for builds)
 !**/package.json
 !**/package-lock.json
+!src/cmd/
+!src/cmd/**
