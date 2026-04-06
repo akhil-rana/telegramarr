@@ -1,5 +1,24 @@
+# Start with ignoring everything
 *
-!src/utils/validations.py
-!src/scripts/telegram.py
-!src/main.py
-!src/requirements.txt
+!*/
+
+# Then specifically allow what we need
+!Dockerfile
+!.dockerignore
+!build/
+!build/prod/
+!build/prod/**
+!go.mod
+!go.sum
+!src/
+!src/**
+
+# But exclude some things within src/
+src/ui/node_modules/
+src/ui/dist/
+src/cmd/*/
+src/internal/*/
+
+# Exclude everything else in build/ except prod/
+build/*
+!build/prod/

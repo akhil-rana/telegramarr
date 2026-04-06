@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -77,10 +78,12 @@ func NewServer(logger *zap.Logger, cfg *config.Config, session *auth.SessionData
 		dataDir:       dataDir,
 	}
 
-	// Initialize TMDB client if API key is provided
-	if cfg.TMDB.APIKey != "" {
+	// Initialize TMDB client if enabled and API key is provided
+	if cfg.TMDB.Enabled && cfg.TMDB.APIKey != "" {
 		s.tmdbClient = tmdb.NewClient(&cfg.TMDB, logger)
 		logger.Info("TMDB client initialized")
+	} else if cfg.TMDB.Enabled && cfg.TMDB.APIKey == "" {
+		logger.Warn("TMDB is enabled but API key is not provided, disabling TMDB features")
 	}
 
 	// Initialize Telegram client with session if available and authenticated
@@ -574,9 +577,10 @@ func (s *Server) GetSettings(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"app_id":     s.config.Telegram.AppID,
-		"channel_id": s.config.Telegram.ChannelID,
-		"username":   s.session.Username,
+		"app_id":         s.config.Telegram.AppID,
+		"radarr_channel": s.config.Telegram.RadarrChannelID,
+		"sonarr_channel": s.config.Telegram.SonarrChannelID,
+		"username":       s.session.Username,
 	})
 }
 
@@ -588,7 +592,22 @@ func (s *Server) RadarrWebhook(c *gin.Context) {
 		return
 	}
 
-	// Validate payload
+	// Log entire JSON payload for debugging/testing
+	payloadJSON, _ := json.MarshalIndent(payload, "", "  ")
+	s.logger.Info("Radarr webhook JSON",
+		zap.String("payload", string(payloadJSON)))
+
+	// Accept test events from Radarr (they have eventType: "Test")
+	if payload.EventType == "Test" {
+		s.logger.Info("Radarr test webhook received")
+		c.JSON(200, gin.H{
+			"message": "Test webhook received successfully",
+			"status":  "ok",
+		})
+		return
+	}
+
+	// Validate real payload
 	if !webhook.ValidateRadarrPayload(&payload) {
 		s.logger.Warn("Invalid Radarr payload - missing required fields")
 		c.JSON(400, gin.H{"error": "invalid or missing required fields"})
@@ -619,7 +638,22 @@ func (s *Server) SonarrWebhook(c *gin.Context) {
 		return
 	}
 
-	// Validate payload
+	// Log entire JSON payload for debugging/testing
+	payloadJSON, _ := json.MarshalIndent(payload, "", "  ")
+	s.logger.Info("Sonarr webhook JSON",
+		zap.String("payload", string(payloadJSON)))
+
+	// Accept test events from Sonarr (they have eventType: "Test")
+	if payload.EventType == "Test" {
+		s.logger.Info("Sonarr test webhook received")
+		c.JSON(200, gin.H{
+			"message": "Test webhook received successfully",
+			"status":  "ok",
+		})
+		return
+	}
+
+	// Validate real payload
 	if !webhook.ValidateSonarrPayload(&payload) {
 		s.logger.Warn("Invalid Sonarr payload - missing required fields")
 		c.JSON(400, gin.H{"error": "invalid or missing required fields"})
@@ -748,7 +782,7 @@ func formatUploadProgressMessage(fileNum int, totalFiles int, source string, tit
 			"\n"+
 			"<b>Progress:</b> %s / %s\n"+
 			"<b>Speed:</b> %s\n"+
-			"<b>%s</b>",
+			"%s",
 		fileNum, totalFiles, strings.ToUpper(source), title, fileName, bar, percent, currentMB, totalMB, speed, eta,
 	)
 }
@@ -788,7 +822,7 @@ func formatUploadProgressMessageWithSpeed(fileNum int, totalFiles int, source st
 			"\n"+
 			"<b>Progress:</b> %s / %s\n"+
 			"<b>Speed:</b> %s\n"+
-			"<b>%s</b>",
+			"%s",
 		fileNum, totalFiles, strings.ToUpper(source), title, fileName, bar, percent, currentMB, totalMB, speed, eta,
 	)
 }
@@ -812,6 +846,12 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 		zap.String("imdbId", payload.Movie.ImdbID),
 		zap.String("filePath", payload.MovieFile.Path))
 
+	// Apply delay to allow filesystem to catch up (especially for rclone mounts)
+	delayTime := time.Duration(s.config.Telegram.DelayTime) * time.Second
+	s.logger.Info("Radarr webhook: waiting before processing",
+		zap.Duration("delay", delayTime))
+	time.Sleep(delayTime)
+
 	// Verify file exists
 	if _, err := os.Stat(payload.MovieFile.Path); err != nil {
 		s.logger.Error("Radarr file does not exist", zap.Error(err), zap.String("path", payload.MovieFile.Path))
@@ -829,8 +869,13 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 		return
 	}
 
-	// Process file upload
-	s.uploadWebhookFile(ctx, payload.MovieFile.Path, payload.Movie.Title, payload.Movie.ImdbID, payload.Movie.TmdbID, "radarr")
+	// Process file upload with metadata for filename shortening
+	s.uploadWebhookFile(ctx, payload.MovieFile.Path, payload.Movie.Title, payload.Movie.ImdbID, payload.Movie.TmdbID, "radarr", s.config.Telegram.RadarrChannelID, &uploader.ShortenerConfig{
+		MovieTitle:   payload.Movie.Title,
+		Quality:      payload.MovieFile.Quality,
+		Format:       payload.MovieFile.MediaInfo.VideoCodec,
+		ReleaseGroup: payload.MovieFile.ReleaseGroup,
+	})
 }
 
 // processSonarrWebhook processes the Sonarr webhook and uploads the episode file
@@ -848,6 +893,12 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 		zap.String("imdbId", payload.Series.ImdbID),
 		zap.Int("tvdbId", payload.Series.TvdbID),
 		zap.String("filePath", payload.EpisodeFile.Path))
+
+	// Apply delay to allow filesystem to catch up (especially for rclone mounts)
+	delayTime := time.Duration(s.config.Telegram.DelayTime) * time.Second
+	s.logger.Info("Sonarr webhook: waiting before processing",
+		zap.Duration("delay", delayTime))
+	time.Sleep(delayTime)
 
 	// Verify file exists
 	if _, err := os.Stat(payload.EpisodeFile.Path); err != nil {
@@ -867,17 +918,18 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 	}
 
 	// Process file upload
-	s.uploadWebhookFile(ctx, payload.EpisodeFile.Path, payload.Series.Title, payload.Series.ImdbID, payload.Series.TvdbID, "sonarr")
+	s.uploadWebhookFile(ctx, payload.EpisodeFile.Path, payload.Series.Title, payload.Series.ImdbID, payload.Series.TvdbID, "sonarr", s.config.Telegram.SonarrChannelID, nil)
 }
 
 // sendTMDBMovieInfo fetches movie details from TMDB and sends poster image with info to Telegram
-// Retries up to 5 times if API fails, waits between retries
-func (s *Server) sendTMDBMovieInfo(ctx context.Context, tmdbID int, title string, source string) {
+// Retries up to 5 times if API fails, uses exponential backoff between retries
+func (s *Server) sendTMDBMovieInfo(ctx context.Context, tmdbID int, title string, source string, channelID int64) {
 	maxRetries := 5
 	var movieDetails *tmdb.MovieDetails
 	var err error
 
-	// Retry logic for fetching TMDB movie details
+	// Retry logic for fetching TMDB movie details with custom backoff intervals
+	backoffIntervals := []time.Duration{5 * time.Second, 8 * time.Second, 15 * time.Second, 20 * time.Second, 30 * time.Second}
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		movieDetails, err = s.tmdbClient.GetMovieDetails(ctx, tmdbID)
 		if err == nil {
@@ -893,7 +945,9 @@ func (s *Server) sendTMDBMovieInfo(ctx context.Context, tmdbID int, title string
 
 		// Don't sleep after last failed attempt
 		if attempt < maxRetries {
-			time.Sleep(1 * time.Second) // Wait 1 second before retry
+			backoffDuration := backoffIntervals[attempt-1]
+			s.logger.Debug("Waiting before retry", zap.Duration("duration", backoffDuration), zap.Int("attempt", attempt))
+			time.Sleep(backoffDuration)
 		}
 	}
 
@@ -923,14 +977,15 @@ func (s *Server) sendTMDBMovieInfo(ctx context.Context, tmdbID int, title string
 	uploadPool := pool.NewPool(s.tgClient, poolSize, s.logger, middlewares...)
 	defer uploadPool.Close()
 
-	messenger := uploader.NewChannelMessenger(s.tgClient, s.config.Telegram.ChannelID, s.logger, uploadPool)
+	messenger := uploader.NewChannelMessenger(s.tgClient, channelID, s.logger, uploadPool)
 
 	// Send poster image with movie details if available
 	if movieDetails.PosterPath != "" {
 		posterURL := s.tmdbClient.GetPosterURL(movieDetails.PosterPath)
 
-		// Retry logic for downloading poster image
+		// Retry logic for downloading poster image with custom backoff intervals
 		var posterBytes []byte
+		backoffIntervals := []time.Duration{5 * time.Second, 8 * time.Second, 15 * time.Second, 20 * time.Second, 30 * time.Second}
 		for attempt := 1; attempt <= maxRetries; attempt++ {
 			posterBytes, err = s.tmdbClient.DownloadImage(ctx, posterURL)
 			if err == nil {
@@ -946,7 +1001,9 @@ func (s *Server) sendTMDBMovieInfo(ctx context.Context, tmdbID int, title string
 
 			// Don't sleep after last failed attempt
 			if attempt < maxRetries {
-				time.Sleep(1 * time.Second) // Wait 1 second before retry
+				backoffDuration := backoffIntervals[attempt-1]
+				s.logger.Debug("Waiting before retry", zap.Duration("duration", backoffDuration), zap.Int("attempt", attempt))
+				time.Sleep(backoffDuration)
 			}
 		}
 
@@ -973,7 +1030,8 @@ func (s *Server) sendTMDBMovieInfo(ctx context.Context, tmdbID int, title string
 }
 
 // uploadWebhookFile handles the common file upload logic for both Radarr and Sonarr webhooks
-func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title string, imdbIDOrTvdbString interface{}, tmdbIDOrTvdbInt interface{}, source string) {
+// metadata: optional ShortenerConfig for RAR filename shortening (only used for RAR splits)
+func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title string, imdbIDOrTvdbString interface{}, tmdbIDOrTvdbInt interface{}, source string, channelID int64, metadata *uploader.ShortenerConfig) {
 	// Check file exists
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
@@ -992,7 +1050,7 @@ func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title s
 
 	// Fetch and send TMDB movie details with poster if available
 	if tmdbID > 0 && s.tmdbClient != nil && source == "radarr" {
-		s.sendTMDBMovieInfo(ctx, tmdbID, title, source)
+		s.sendTMDBMovieInfo(ctx, tmdbID, title, source, channelID)
 	}
 
 	// Determine size limit based on premium status
@@ -1005,30 +1063,57 @@ func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title s
 
 	// If file is smaller than limit, upload directly without RAR
 	if fileSize < sizeLimit {
-		s.uploadWebhookFileDirectly(ctx, filePath, title, source, fileSize)
+		s.uploadWebhookFileDirectly(ctx, filePath, title, source, fileSize, channelID)
 		return
 	}
 
 	// File is larger than limit, use RAR splitting
-	s.uploadWebhookFileWithRar(ctx, filePath, title, source, isPremium, sizeLimit)
+	s.uploadWebhookFileWithRar(ctx, filePath, title, source, isPremium, sizeLimit, channelID, metadata)
 }
 
 // uploadWebhookFileDirectly uploads a file without RAR splitting
-func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string, title string, source string, fileSize int64) {
+func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string, title string, source string, fileSize int64, channelID int64) {
 	s.logger.Info("Uploading file directly (no RAR needed)", zap.String("file", filePath), zap.Int64("size", fileSize), zap.String("source", source))
 
 	isPremium := s.session != nil && s.session.Premium
 
+	// Send filename caption before uploading
+	fileName := filepath.Base(filePath)
+	caption := fmt.Sprintf("<code>%s</code>", fileName)
+
+	// Create a temporary messenger to send the caption
+	poolSize := int64(s.config.Telegram.PoolSize)
+	if poolSize < 1 {
+		poolSize = 8
+	}
+
+	middlewares := tgc.NewMiddleware(
+		&s.config.Telegram,
+		tgc.WithFloodWait(),
+		tgc.WithRecovery(ctx),
+		tgc.WithRetry(s.config.Telegram.MaxRetries),
+		tgc.WithRateLimit(),
+	)
+
+	uploadPool := pool.NewPool(s.tgClient, poolSize, s.logger, middlewares...)
+	defer uploadPool.Close()
+
+	messenger := uploader.NewChannelMessenger(s.tgClient, channelID, s.logger, uploadPool)
+	if _, err := messenger.SendMessage(ctx, caption); err != nil {
+		s.logger.Warn("Failed to send filename caption", zap.Error(err), zap.String("file", fileName))
+	}
+
 	// Use centralized upload mechanism
-	if err := s.uploadFilesToChannel(ctx, []string{filePath}, title, source, isPremium); err != nil {
+	if err := s.uploadFilesToChannel(ctx, []string{filePath}, title, source, isPremium, channelID); err != nil {
 		s.logger.Error("File upload failed", zap.Error(err), zap.String("source", source))
 	}
 
-	s.logger.Info("Webhook file upload complete", zap.String("source", source), zap.String("title", title), zap.String("file", filepath.Base(filePath)))
+	s.logger.Info("Webhook file upload complete", zap.String("source", source), zap.String("title", title), zap.String("file", fileName))
 }
 
 // uploadWebhookFileWithRar uploads a large file using RAR splitting via centralized upload mechanism
-func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, title string, source string, isPremium bool, sizeLimit int64) {
+// metadata: optional ShortenerConfig for RAR filename shortening
+func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, title string, source string, isPremium bool, sizeLimit int64, channelID int64, metadata *uploader.ShortenerConfig) {
 	// Create messenger for RAR progress updates
 	poolSize := int64(s.config.Telegram.PoolSize)
 	if poolSize < 1 {
@@ -1046,7 +1131,7 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 	uploadPool := pool.NewPool(s.tgClient, poolSize, s.logger, middlewares...)
 	defer uploadPool.Close()
 
-	messenger := uploader.NewChannelMessenger(s.tgClient, s.config.Telegram.ChannelID, s.logger, uploadPool)
+	messenger := uploader.NewChannelMessenger(s.tgClient, channelID, s.logger, uploadPool)
 
 	// Send initial message
 	fileName := filepath.Base(filePath)
@@ -1078,7 +1163,9 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 
 	s.logger.Info("Starting RAR split for webhook", zap.String("file", filePath), zap.String("source", source))
 
-	// Track last update time for progress messages (update every 2 seconds)
+	// Track last update time for progress messages (update interval from config)
+	refreshInterval := time.Duration(s.config.Telegram.MessageRefreshInterval) * time.Second
+	s.logger.Info("Message refresh interval set", zap.Duration("interval", refreshInterval), zap.Int("config_value", s.config.Telegram.MessageRefreshInterval))
 	lastUpdateTime := time.Now()
 	lastInfoLogTime := time.Now()
 	var lastRarProgressMsg string
@@ -1097,8 +1184,9 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 			lastInfoLogTime = now
 		}
 
-		// Edit status message every 2 seconds or at completion
-		if now.Sub(lastUpdateTime) >= 2*time.Second || percent == 100 {
+		// Edit status message at configured interval or at completion
+		if now.Sub(lastUpdateTime) >= refreshInterval || percent == 100 {
+			s.logger.Debug("Updating RAR progress message", zap.Int("percent", percent), zap.Duration("time_since_update", now.Sub(lastUpdateTime)), zap.Duration("refresh_interval", refreshInterval))
 			lastUpdateTime = now
 			progressMsg := formatRARProgressMessage(fileName, source, title, percent, bytesProcessed, totalBytes)
 
@@ -1114,9 +1202,9 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 				s.logger.Error("Failed to update webhook RAR status message", zap.Error(err), zap.Int("msg_id", msgID), zap.String("source", source))
 				return
 			}
-			s.logger.Info("Webhook RAR status message edited", zap.Int("msg_id", msgID))
+			s.logger.Info("Webhook RAR status message edited", zap.Int("msg_id", msgID), zap.Int("percent", percent))
 		}
-	})
+	}, metadata)
 
 	if err != nil {
 		s.logger.Error("Failed to split file for webhook", zap.Error(err), zap.String("source", source))
@@ -1142,7 +1230,7 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 	s.logger.Info("File split complete for webhook", zap.Int("parts", len(rarParts)), zap.String("source", source))
 
 	// Use centralized upload mechanism for RAR parts, passing the existing message ID to reuse it
-	if err := s.uploadFilesToChannel(ctx, rarParts, title, source, isPremium, msgID); err != nil {
+	if err := s.uploadFilesToChannel(ctx, rarParts, title, source, isPremium, channelID, msgID); err != nil {
 		s.logger.Error("Failed to upload webhook RAR parts", zap.Error(err), zap.String("source", source))
 	}
 
@@ -1153,8 +1241,9 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 
 // uploadFilesToChannel is the centralized upload mechanism used by both test and webhook uploads
 // It handles pool creation, and actual file uploads using the already-authenticated client
+// channelID: telegram channel to upload to
 // existingMsgID: if provided (>0), will reuse that message for the first upload instead of creating a new one
-func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, title string, source string, isPremium bool, existingMsgID ...int) error {
+func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, title string, source string, isPremium bool, channelID int64, existingMsgID ...int) error {
 	// Ensure client is ready
 	if s.clientManager == nil || s.tgClient == nil {
 		s.logger.Error("Telegram client not initialized", zap.String("source", source))
@@ -1187,8 +1276,8 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 	defer uploadPool.Close()
 
 	// Create messenger and uploader
-	messenger := uploader.NewChannelMessenger(telegramClient, s.config.Telegram.ChannelID, s.logger, uploadPool)
-	telegramUploader := uploader.NewTelegramUploader(telegramClient, s.config.Telegram.ChannelID, s.logger, &s.config.Telegram, uploadPool)
+	messenger := uploader.NewChannelMessenger(telegramClient, channelID, s.logger, uploadPool)
+	telegramUploader := uploader.NewTelegramUploader(telegramClient, channelID, s.logger, &s.config.Telegram, uploadPool)
 
 	// Upload each file
 	for i, filePath := range filePaths {
@@ -1216,7 +1305,8 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 			msgID, _ = messenger.SendMessage(ctx, statusMsg)
 		}
 
-		// Track last update time for progress messages (update every 2 seconds)
+		// Track last update time for progress messages (update interval configurable from config)
+		refreshInterval := time.Duration(s.config.Telegram.MessageRefreshInterval) * time.Second
 		lastUpdateTime := time.Now()
 		uploadStartTime := time.Now()
 		lastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
@@ -1255,8 +1345,8 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 				lastInfoLogTime = now
 			}
 
-			// Edit progress message only every 2 seconds or at completion
-			if msgID > 0 && (now.Sub(lastUpdateTime) >= 2*time.Second || percent == 100) {
+			// Edit progress message at configured interval or at completion
+			if msgID > 0 && (now.Sub(lastUpdateTime) >= refreshInterval || percent == 100) {
 				lastUpdateTime = now
 				progressMsg := formatUploadProgressMessageWithSpeed(fileNum, totalFiles, source, title, fileName, percent, current, total, elapsed, currentSpeed)
 

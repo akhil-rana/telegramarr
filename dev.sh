@@ -26,8 +26,12 @@ trap cleanup EXIT INT TERM
 echo "Cleaning up any existing processes..."
 pkill -f "telegramarr" 2>/dev/null || true
 pkill -f "vite.*8008" 2>/dev/null || true
-pkill -f "vite.*8009" 2>/dev/null || true
-pkill -f "vite.*8010" 2>/dev/null || true
+
+# Kill processes using ports 8008 and 8009 directly
+lsof -ti:8008 | xargs kill -9 2>/dev/null || true
+lsof -ti:8009 | xargs kill -9 2>/dev/null || true
+lsof -ti:8010 | xargs kill -9 2>/dev/null || true
+
 sleep 1
 
 # Create build directory if it doesn't exist

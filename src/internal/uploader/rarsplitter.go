@@ -30,7 +30,8 @@ func NewRarSplitter(logger *zap.Logger) *RarSplitter {
 // progressCallback is called with (bytesProcessed, totalBytes, percentage)
 // If RAR files already exist with correct sizes, they will be reused (no re-splitting)
 // Creates a subfolder named after the original file in outputDir
-func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, progressCallback func(bytesProcessed, totalBytes int64, percent int)) ([]string, error) {
+// rarNameConfig: optional configuration for shortened RAR filename (nil = use original)
+func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, progressCallback func(bytesProcessed, totalBytes int64, percent int), rarNameConfig *ShortenerConfig) ([]string, error) {
 	fileInfo, err := os.Stat(inputPath)
 	if err != nil {
 		rs.logger.Error("Failed to stat file", zap.String("file", inputPath), zap.Error(err))
@@ -73,8 +74,20 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 		zap.Bool("premium_user", isPremium),
 		zap.Int64("num_parts", numParts))
 
+	// Determine RAR output basename BEFORE checking for existing files
+	// This ensures we check for the correct filenames
+	var rarBaseName string
+	if rarNameConfig != nil {
+		// Use shortened basename - RAR will add .part1.rar, .part2.rar, etc. automatically
+		rarBaseName = ShortenRarBasename(fileName, *rarNameConfig)
+		rs.logger.Info("Using shortened RAR basename", zap.String("base", rarBaseName), zap.String("config", fmt.Sprintf("%+v", rarNameConfig)))
+	} else {
+		// Use original filename without extension
+		rarBaseName = fileNameWithoutExt
+	}
+
 	// Check if RAR parts already exist with correct sizes
-	existingParts := rs.checkExistingRarParts(fileSubDir, fileNameWithoutExt, numParts)
+	existingParts := rs.checkExistingRarParts(fileSubDir, rarBaseName, numParts)
 	if len(existingParts) == int(numParts) {
 		rs.logger.Info("Reusing existing RAR parts", zap.Int("count", len(existingParts)))
 		// Still call progress callback to show 100% completion
@@ -103,7 +116,7 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 	rs.logger.Info("Created RAR subdirectory", zap.String("dir", fileSubDir))
 
 	// Create RAR output filename (will be part1.rar, part2.rar, etc.)
-	rarOutputBase := filepath.Join(fileSubDir, fileNameWithoutExt)
+	rarOutputBase := filepath.Join(fileSubDir, rarBaseName)
 
 	// Build RAR command
 	// rar a -ep1 -v<size>m -m0 -y <output.rar> <input>
@@ -210,10 +223,10 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 		var rarPath string
 		if numParts == 1 {
 			// Single file, just .rar
-			rarPath = filepath.Join(fileSubDir, fmt.Sprintf("%s.rar", fileNameWithoutExt))
+			rarPath = filepath.Join(fileSubDir, fmt.Sprintf("%s.rar", rarBaseName))
 		} else {
 			// Multiple parts: .part1.rar, .part2.rar, etc.
-			rarPath = filepath.Join(fileSubDir, fmt.Sprintf("%s.part%d.rar", fileNameWithoutExt, partNum))
+			rarPath = filepath.Join(fileSubDir, fmt.Sprintf("%s.part%d.rar", rarBaseName, partNum))
 		}
 
 		// Check if file exists

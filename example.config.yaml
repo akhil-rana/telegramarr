@@ -1,7 +1,11 @@
 telegram:
   app_id: 2040
   app_hash: "b18441a1ff607e10a989891a5462e627"
-  channel_id: 00000000000
+  
+  # Separate channels for Radarr and Sonarr webhooks
+  radarr_channel_id: 00000000001    # Telegram chat/channel ID for Radarr notifications
+  sonarr_channel_id: 00000000002    # Telegram chat/channel ID for Sonarr notifications
+  
   device_model: "Desktop"
   system_version: "Windows 11"
   app_version: "6.7.0"
@@ -19,16 +23,28 @@ telegram:
   upload_threads: 8          # Number of parallel upload threads (default: 8, range: 1-16)
   upload_part_size: 512      # Upload chunk size in KB (default: 512, range: 256-2048)
   pool_size: 8               # Connection pool size for concurrent uploads (default: 8, range: 1-32)
+  
+  # Message refresh interval for upload progress updates (in seconds)
+  message_refresh_interval: 2        # How often to update upload progress message (default: 2 seconds)
+  
+  # Delay before processing webhook (in seconds) - allows filesystem to catch up for rclone mounts
+  delay_time: 30             # Default: 30 seconds
+
+# File paths for Radarr and Sonarr
+paths:
+  radarr_movies: "./movies/"         # Path where Radarr stores movies (with trailing slash)
+  sonarr_tvshows: "./tvshows/"       # Path where Sonarr stores TV shows (with trailing slash)
 
 # TMDB API Configuration (Optional)
 # Get your API key from: https://www.themoviedb.org/settings/api
-# This enables automatic movie poster and details fetching for Radarr webhooks
+# Set enabled to true to fetch movie posters and details for Radarr webhooks
 tmdb:
-  api_key: "your_tmdb_api_key_here"  # Required: TMDB API key for accessing movie data
+  enabled: false                                              # Set to true to enable TMDB features (default: false)
+  api_key: "your_tmdb_api_key_here"                          # TMDB API key (required if enabled is true)
   # Image configuration (optional, defaults provided)
-  image_base_url: "https://image.tmdb.org/t/p/"  # Base URL for TMDB poster/backdrop images
-  poster_size: "w342"                             # Poster width: w92, w154, w185, w342, w500, w780, original (default: w342)
-  backdrop_size: "w780"                           # Backdrop width: w300, w780, w1280, original (default: w780)
+  image_base_url: "https://image.tmdb.org/t/p/"              # Base URL for TMDB poster/backdrop images
+  poster_size: "w342"                                         # Poster width: w92, w154, w185, w342, w500, w780, original (default: w342)
+  backdrop_size: "w780"                                       # Backdrop width: w300, w780, w1280, original (default: w780)
 
 server:
   port: 8080

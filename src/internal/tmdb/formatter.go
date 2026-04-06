@@ -19,6 +19,11 @@ func FormatMovieDetailsMessage(movie *MovieDetails) string {
 		releaseYear := strings.Split(movie.ReleaseDate, "-")[0]
 		title += fmt.Sprintf(" - <b>%s</b>", releaseYear)
 	}
+	// Add IMDb link at the end if available
+	if movie.ExternalIDs != nil && movie.ExternalIDs.IMDbID != "" {
+		imdbLink := fmt.Sprintf("<a href=\"https://imdb.com/title/%s/\">IMDb</a>", movie.ExternalIDs.IMDbID)
+		title += fmt.Sprintf(" - %s", imdbLink)
+	}
 	parts = append(parts, title)
 
 	// Runtime with emoji and label
@@ -43,7 +48,7 @@ func FormatMovieDetailsMessage(movie *MovieDetails) string {
 		for i, g := range movie.Genres {
 			genreNames[i] = escapeHTML(g.Name)
 		}
-		parts = append(parts, strings.Join(genreNames, ", "))
+		parts = append(parts, "<b>Genre:</b> "+strings.Join(genreNames, ", "))
 	}
 
 	// Tagline

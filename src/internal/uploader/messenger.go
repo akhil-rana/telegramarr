@@ -372,7 +372,8 @@ func stripHTMLAndParseEntities(text string) (string, []tg.MessageEntityClass) {
 
 	type openTag struct {
 		name   string
-		offset int // UTF-16 offset
+		offset int    // UTF-16 offset
+		url    string // For <a> tags
 	}
 
 	// Stack to track open tags
@@ -446,6 +447,12 @@ func stripHTMLAndParseEntities(text string) (string, []tg.MessageEntityClass) {
 								Offset: startOffset,
 								Length: length,
 							}
+						case "a":
+							entity = &tg.MessageEntityTextURL{
+								Offset: startOffset,
+								Length: length,
+								URL:    stack[j].url,
+							}
 						}
 
 						if entity != nil {
@@ -472,6 +479,28 @@ func stripHTMLAndParseEntities(text string) (string, []tg.MessageEntityClass) {
 			switch tagName {
 			case "b", "i", "u", "s", "code":
 				stack = append(stack, openTag{name: tagName, offset: utf16Offset})
+			case "a":
+				// Extract href attribute
+				var url string
+				if hrefIdx := strings.Index(tagContent, "href="); hrefIdx >= 0 {
+					// Find the quote after href=
+					startIdx := hrefIdx + 5
+					if startIdx < len(tagContent) {
+						// Skip whitespace
+						for startIdx < len(tagContent) && (tagContent[startIdx] == ' ' || tagContent[startIdx] == '\t') {
+							startIdx++
+						}
+						// Find the quote character
+						if startIdx < len(tagContent) && (tagContent[startIdx] == '"' || tagContent[startIdx] == '\'') {
+							quoteChar := tagContent[startIdx]
+							endIdx := strings.Index(tagContent[startIdx+1:], string(quoteChar))
+							if endIdx >= 0 {
+								url = tagContent[startIdx+1 : startIdx+1+endIdx]
+							}
+						}
+					}
+				}
+				stack = append(stack, openTag{name: "a", offset: utf16Offset, url: url})
 			}
 
 			// Skip to after the closing tag
