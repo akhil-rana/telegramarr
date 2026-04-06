@@ -1,9 +1,6 @@
 # ARM64 runtime-only Dockerfile (Alpine-based, minimal)
-# Uses ilteoood/rar-on-arm Docker image to get RAR binaries for ARM64
+# Note: RAR tools not available for ARM64
 # Expects pre-built ARM64 artifacts from build.sh in build/prod/
-
-# Get RAR binaries for ARM64
-FROM ilteoood/rar-on-arm:latest as rar
 
 FROM arm64v8/alpine:latest
 
@@ -17,13 +14,6 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     tini
-
-# Copy RAR binaries from rar-on-arm image
-COPY --from=rar /usr/bin/rar /usr/local/bin/rar
-
-# Verify RAR tool is available
-RUN which rar && \
-    rar 2>&1 | head -2
 
 # Create non-root user for security
 RUN addgroup -g 1000 -S telegramarr && \
@@ -63,14 +53,10 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 # Notes:
 # ============================================
 # - ARM64 (aarch64) Alpine-based image (minimal)
-# - RAR tool: From ilteoood/rar-on-arm Docker image (pre-compiled for ARM64)
 # - Go binary: MUST be compiled for ARM64 (native execution)
 # - 7z: From p7zip package for alternative compression
-# - Image size: ~120-150MB (Alpine ARM64 + Go binary + frontend + RAR binary)
-#
-# RAR support on ARM64:
-#   - Create RAR files: Use rar (included from ilteoood/rar-on-arm)
-#   - Extract RAR files: Use 7z or unrar from host
+# - Image size: ~100-120MB (Alpine ARM64 + Go binary + frontend)
+# - RAR tools: NOT included (use x86-64 container if RAR needed)
 #
 # Build for ARM64:
 #   docker build -f Dockerfile.arm64 -t telegramarr:latest-arm64 .

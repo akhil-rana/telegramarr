@@ -1,9 +1,6 @@
 # ARM64 Development Dockerfile - builds and runs everything in container
 # Alpine-based, minimal, native ARM64 Go build
-# Uses ilteoood/rar-on-arm Docker image to get RAR binaries for ARM64
-
-# Get RAR binaries for ARM64
-FROM ilteoood/rar-on-arm:latest as rar
+# Note: RAR tools not available for ARM64
 
 FROM arm64v8/golang:1.25-alpine AS base
 
@@ -22,13 +19,6 @@ RUN apk add --no-cache \
     tzdata \
     tini \
     libc6-compat
-
-# Copy RAR binaries from rar-on-arm image
-COPY --from=rar /usr/bin/rar /usr/local/bin/rar
-
-# Verify RAR tool is available
-RUN which rar && \
-    rar 2>&1 | head -2
 
 WORKDIR /app
 
@@ -111,16 +101,11 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 # ============================================
 # - ARM64 (aarch64) Alpine-based image (minimal)
 # - Go binary: Compiled natively for ARM64 (native execution)
-# - RAR tools: From ilteoood/rar-on-arm Docker image (pre-compiled for ARM64)
 # - 7z: From p7zip package for alternative compression
 # - Go 1.25 (required by go.mod)
-# - Image size: ~900MB-1GB (with build tools)
+# - Image size: ~800MB-1GB (with build tools)
 # - Build time: ~15-20 minutes on ARM64 system
-#
-# RAR support on ARM64:
-#   - Extract RAR files: Use unrar
-#   - Create RAR files: Use rar
-#   - Both tools natively available via ilteoood/rar-on-arm
+# - RAR tools: NOT included (use x86-64 container if RAR needed)
 #
 # Cross-compile from x86 with buildx:
 #   docker buildx build --platform linux/arm64 -f Dockerfile.dev.arm64 -t telegramarr:dev-arm64 .

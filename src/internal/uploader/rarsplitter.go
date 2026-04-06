@@ -308,6 +308,11 @@ func (rs *RarSplitter) CleanupRarFiles(rarParts []string) {
 	}
 }
 
+// CleanupFiles removes all RAR part files and their parent folder (implements Archiver interface)
+func (rs *RarSplitter) CleanupFiles(rarParts []string) {
+	rs.CleanupRarFiles(rarParts)
+}
+
 // getTotalDirSize calculates the total size of all files in a directory
 func (rs *RarSplitter) getTotalDirSize(dirPath string) int64 {
 	var totalSize int64

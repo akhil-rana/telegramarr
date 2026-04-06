@@ -726,11 +726,21 @@ func formatSpeedDelta(bytes int64, elapsed time.Duration) string {
 	return fmt.Sprintf("%.1f MBps", mbps)
 }
 
-// formatRARProgressMessage creates formatted RAR splitting message
+// formatRARProgressMessage creates formatted RAR splitting message (kept for backward compatibility)
 func formatRARProgressMessage(fileName string, source string, title string, percent int, bytesProcessed int64, totalBytes int64) string {
+	return formatArchiveProgressMessage(fileName, source, title, "rar", percent, bytesProcessed, totalBytes)
+}
+
+// formatArchiveProgressMessage creates formatted archive splitting message for RAR or 7z
+func formatArchiveProgressMessage(fileName string, source string, title string, format string, percent int, bytesProcessed int64, totalBytes int64) string {
 	bar := formatProgressBar(percent)
 	currentMB := formatBytes(bytesProcessed)
 	totalMB := formatBytes(totalBytes)
+
+	formatName := strings.ToUpper(format)
+	if format == "7z" {
+		formatName = "7z"
+	}
 
 	return fmt.Sprintf(
 		"<b>📦 %s Webhook Upload</b>\n"+
@@ -738,11 +748,11 @@ func formatRARProgressMessage(fileName string, source string, title string, perc
 			"<b>Title:</b> %s\n"+
 			"<b>File:</b> <b><code>%s</code></b>\n"+
 			"\n"+
-			"<b>Preparing RAR Parts</b>\n"+
+			"<b>Preparing %s Parts</b>\n"+
 			"%s %d%%\n"+
 			"\n"+
 			"<b>Progress:</b> %s / %s",
-		strings.ToUpper(source), title, fileName, bar, percent, currentMB, totalMB,
+		strings.ToUpper(source), title, fileName, formatName, bar, percent, currentMB, totalMB,
 	)
 }
 
@@ -1111,10 +1121,10 @@ func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string,
 	s.logger.Info("Webhook file upload complete", zap.String("source", source), zap.String("title", title), zap.String("file", fileName))
 }
 
-// uploadWebhookFileWithRar uploads a large file using RAR splitting via centralized upload mechanism
-// metadata: optional ShortenerConfig for RAR filename shortening
+// uploadWebhookFileWithRar uploads a large file using archive splitting (RAR or 7z) via centralized upload mechanism
+// metadata: optional ShortenerConfig for archive filename shortening
 func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, title string, source string, isPremium bool, sizeLimit int64, channelID int64, metadata *uploader.ShortenerConfig) {
-	// Create messenger for RAR progress updates
+	// Create messenger for archive progress updates
 	poolSize := int64(s.config.Telegram.PoolSize)
 	if poolSize < 1 {
 		poolSize = 8
@@ -1139,7 +1149,7 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 		"<b>📦 %s Webhook Upload</b>\n\n"+
 			"<b>Title:</b> %s\n"+
 			"<b>File:</b> %s\n\n"+
-			"<b>Preparing RAR Parts...</b>",
+			"<b>Preparing Archive Parts...</b>",
 		strings.ToUpper(source), title, fileName,
 	)
 
@@ -1150,59 +1160,60 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 		return
 	}
 
-	// Split file with progress callback
-	rarSplitter := uploader.NewRarSplitter(s.logger)
+	// Split file with progress callback using configured archive format
+	archiver := uploader.NewArchiver(s.config.Telegram.SplitArchiveFormat, s.logger)
 
-	tempRarDir := filepath.Join(".", "temp")
-	if err := os.MkdirAll(tempRarDir, 0755); err != nil {
-		s.logger.Error("Failed to create temp RAR directory", zap.Error(err))
-		updateMsg := fmt.Sprintf("❌ <b>Error creating temp directory:</b> %v", err)
+	// Create temp directory at project root using the config helper
+	tempArchiveDir, err := config.GetTempDir()
+	if err != nil {
+		s.logger.Error("Failed to get temp directory", zap.Error(err))
+		updateMsg := fmt.Sprintf("❌ <b>Error getting temp directory:</b> %v", err)
 		messenger.UpdateMessage(ctx, msgID, updateMsg)
 		return
 	}
 
-	s.logger.Info("Starting RAR split for webhook", zap.String("file", filePath), zap.String("source", source))
+	s.logger.Info("Starting archive split for webhook", zap.String("file", filePath), zap.String("source", source), zap.String("format", s.config.Telegram.SplitArchiveFormat))
 
 	// Track last update time for progress messages (update interval from config)
 	refreshInterval := time.Duration(s.config.Telegram.MessageRefreshInterval) * time.Second
 	s.logger.Info("Message refresh interval set", zap.Duration("interval", refreshInterval), zap.Int("config_value", s.config.Telegram.MessageRefreshInterval))
 	lastUpdateTime := time.Now()
 	lastInfoLogTime := time.Now()
-	var lastRarProgressMsg string
+	var lastArchiveProgressMsg string
 
 	// Split file with progress callback for Telegram updates
-	rarParts, err := rarSplitter.SplitFile(filePath, tempRarDir, 0, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
+	archiveParts, err := archiver.SplitFile(filePath, tempArchiveDir, 0, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
 		// Only log periodically (every 10%) to avoid flooding logs
 		if percent%10 == 0 {
-			s.logger.Debug("Webhook RAR split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
+			s.logger.Debug("Webhook archive split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
 		}
 
 		// Log at Info level only every 5 seconds (not on every callback)
 		now := time.Now()
 		if now.Sub(lastInfoLogTime) >= 5*time.Second && percent > 0 && percent < 100 {
-			s.logger.Info("Webhook RAR split in progress", zap.Int("percent", percent), zap.Int64("bytes", bytesProcessed), zap.String("source", source))
+			s.logger.Info("Webhook archive split in progress", zap.Int("percent", percent), zap.Int64("bytes", bytesProcessed), zap.String("source", source))
 			lastInfoLogTime = now
 		}
 
 		// Edit status message at configured interval or at completion
 		if now.Sub(lastUpdateTime) >= refreshInterval || percent == 100 {
-			s.logger.Debug("Updating RAR progress message", zap.Int("percent", percent), zap.Duration("time_since_update", now.Sub(lastUpdateTime)), zap.Duration("refresh_interval", refreshInterval))
+			s.logger.Debug("Updating archive progress message", zap.Int("percent", percent), zap.Duration("time_since_update", now.Sub(lastUpdateTime)), zap.Duration("refresh_interval", refreshInterval))
 			lastUpdateTime = now
-			progressMsg := formatRARProgressMessage(fileName, source, title, percent, bytesProcessed, totalBytes)
+			progressMsg := formatArchiveProgressMessage(fileName, source, title, s.config.Telegram.SplitArchiveFormat, percent, bytesProcessed, totalBytes)
 
 			// Only update if message content actually changed
-			if progressMsg == lastRarProgressMsg {
+			if progressMsg == lastArchiveProgressMsg {
 				return
 			}
-			lastRarProgressMsg = progressMsg
+			lastArchiveProgressMsg = progressMsg
 
 			// Edit the initial message
 			err := messenger.UpdateMessage(context.Background(), msgID, progressMsg)
 			if err != nil {
-				s.logger.Error("Failed to update webhook RAR status message", zap.Error(err), zap.Int("msg_id", msgID), zap.String("source", source))
+				s.logger.Error("Failed to update webhook archive status message", zap.Error(err), zap.Int("msg_id", msgID), zap.String("source", source))
 				return
 			}
-			s.logger.Info("Webhook RAR status message edited", zap.Int("msg_id", msgID), zap.Int("percent", percent))
+			s.logger.Info("Webhook archive status message edited", zap.Int("msg_id", msgID), zap.Int("percent", percent))
 		}
 	}, metadata)
 
@@ -1214,28 +1225,28 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 				s.logger.Warn("Failed to delete webhook initial message on error", zap.Error(err), zap.Int("msg_id", msgID))
 			}
 		}
-		errorMsg := fmt.Sprintf("❌ <b>Error creating RAR parts:</b> %v", err)
+		errorMsg := fmt.Sprintf("❌ <b>Error creating archive parts:</b> %v", err)
 		messenger.SendMessage(ctx, errorMsg)
 		return
 	}
 
-	if len(rarParts) == 0 {
-		s.logger.Warn("No RAR parts created for webhook", zap.String("file", filePath), zap.String("source", source))
+	if len(archiveParts) == 0 {
+		s.logger.Warn("No archive parts created for webhook", zap.String("file", filePath), zap.String("source", source))
 		if msgID > 0 {
 			messenger.DeleteMessage(context.Background(), msgID)
 		}
 		return
 	}
 
-	s.logger.Info("File split complete for webhook", zap.Int("parts", len(rarParts)), zap.String("source", source))
+	s.logger.Info("File split complete for webhook", zap.Int("parts", len(archiveParts)), zap.String("source", source))
 
-	// Use centralized upload mechanism for RAR parts, passing the existing message ID to reuse it
-	if err := s.uploadFilesToChannel(ctx, rarParts, title, source, isPremium, channelID, msgID); err != nil {
-		s.logger.Error("Failed to upload webhook RAR parts", zap.Error(err), zap.String("source", source))
+	// Use centralized upload mechanism for archive parts, passing the existing message ID to reuse it
+	if err := s.uploadFilesToChannel(ctx, archiveParts, title, source, isPremium, channelID, msgID); err != nil {
+		s.logger.Error("Failed to upload webhook archive parts", zap.Error(err), zap.String("source", source))
 	}
 
-	// Cleanup RAR files
-	rarSplitter.CleanupRarFiles(rarParts)
+	// Cleanup archive files
+	archiver.CleanupFiles(archiveParts)
 	s.logger.Info("Webhook upload complete", zap.String("source", source), zap.String("title", title))
 }
 

@@ -36,6 +36,9 @@ type TelegramConfig struct {
 
 	// Delay time before processing webhook (in seconds) - allows filesystem to catch up, especially for rclone mounts
 	DelayTime int `mapstructure:"delay_time" default:"30"`
+
+	// Archive format for splitting large files (rar or 7z)
+	SplitArchiveFormat string `mapstructure:"split_archive_format" default:"rar"`
 }
 
 type TMDBConfig struct {

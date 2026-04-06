@@ -29,6 +29,9 @@ telegram:
   
   # Delay before processing webhook (in seconds) - allows filesystem to catch up for rclone mounts
   delay_time: 30             # Default: 30 seconds
+  
+  # Archive format for splitting large files (rar or 7z)
+  split_archive_format: "rar"        # Format to use when splitting large files: "rar" or "7z" (default: "rar")
 
 # File paths for Radarr and Sonarr
 paths:
