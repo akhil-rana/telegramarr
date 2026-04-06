@@ -6,7 +6,7 @@ FROM alpine:latest
 WORKDIR /app
 
 # Install runtime dependencies
-# - libc6-compat: C library compatibility for pre-built binaries
+# - libc6-compat: C library compatibility for RAR binaries (they're dynamically linked)
 # - libstdc++: C++ standard library for various tools
 # - p7zip: For 7z compression tool
 # - ca-certificates: For HTTPS/TLS support
@@ -24,15 +24,17 @@ RUN apk add --no-cache \
     curl \
     tar
 
-# Install RAR (unrar binary) from official source
-# Download RAR tools, extract unrar binary, and clean up
+# Install RAR (rar and unrar binaries) from official source
+# Note: Archive contains rar/ folder with binaries inside
+# Download RAR tools, extract rar folder, copy binaries, and clean up
 RUN curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
-    tar xf /tmp/rarlinux.tar.gz -C /tmp --strip-components=1 && \
-    install -v -m755 /tmp/unrar /usr/local/bin && \
-    install -v -m755 /tmp/rar /usr/local/bin && \
-    rm -rf /tmp/rarlinux.tar.gz /tmp/rar /tmp/unrar && \
-    unrar -? 2>&1 | head -3 && \
-    rar -? 2>&1 | head -3
+    tar xf /tmp/rarlinux.tar.gz -C /tmp && \
+    install -v -m755 /tmp/rar/unrar /usr/local/bin && \
+    install -v -m755 /tmp/rar/rar /usr/local/bin && \
+    rm -rf /tmp/rarlinux.tar.gz /tmp/rar && \
+    which unrar && which rar && \
+    unrar 2>&1 | head -3 && \
+    rar 2>&1 | head -3
 
 # Create non-root user for security
 RUN addgroup -g 1000 -S telegramarr && \
@@ -138,4 +140,3 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 # Image size: ~100-150MB (Alpine + Go binary + frontend + rar tools)
 # Build time: ~2-3 minutes (no compilation, just copying + rar download)
 # No Node.js or Go toolchain in final image - runtime only!
-

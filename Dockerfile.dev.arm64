@@ -1,0 +1,122 @@
+# ARM64 Development Dockerfile - builds and runs everything in container
+# Alpine-based, minimal, uses QEMU for x86-64 RAR binary emulation
+
+FROM arm64v8/golang:1.25-alpine AS base
+
+# Install build dependencies (minimal)
+RUN apk add --no-cache \
+    git \
+    make \
+    gcc \
+    musl-dev \
+    curl \
+    tar \
+    nodejs \
+    npm \
+    p7zip \
+    ca-certificates \
+    tzdata \
+    tini \
+    libc6-compat \
+    qemu-user-static
+
+# Download and extract RAR binaries (x86-64)
+# QEMU will handle execution on ARM64
+RUN curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
+    tar xf /tmp/rarlinux.tar.gz -C /tmp && \
+    install -v -m755 /tmp/rar/unrar /usr/local/bin && \
+    install -v -m755 /tmp/rar/rar /usr/local/bin && \
+    rm -rf /tmp/rarlinux.tar.gz /tmp/rar && \
+    which unrar && which rar && \
+    unrar 2>&1 | head -2 && \
+    rar 2>&1 | head -2
+
+WORKDIR /app
+
+# Copy entire source code
+COPY . .
+
+# Build React frontend
+RUN echo "Building React frontend..." && \
+    cd src/ui && \
+    npm install && \
+    npm run build && \
+    cd /app && \
+    echo "Frontend build complete"
+
+# Build Go binary for ARM64 (go.mod is in src/ directory)
+RUN echo "Building Go binary for ARM64..." && \
+    cd src && \
+    CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build \
+    -ldflags="-s -w" \
+    -o ../telegramarr \
+    ./cmd/telegramarr && \
+    cd /app && \
+    echo "Go binary build complete"
+
+# Verify builds
+RUN echo "Verifying builds..." && \
+    ls -lh telegramarr && \
+    ls -la src/ui/dist/ && \
+    [ -x ./telegramarr ] && echo "Binary is executable" && \
+    echo "Build verification complete"
+
+# Create non-root user for security
+RUN addgroup -g 1000 -S telegramarr && \
+    adduser -u 1000 -S telegramarr -G telegramarr
+
+# Create necessary directories with correct permissions
+RUN mkdir -p /app/data /app/temp /app/movies /app/tvshows && \
+    chown -R telegramarr:telegramarr /app && \
+    chmod 755 /app/data /app/temp /app/movies /app/tvshows /app/telegramarr
+
+# Make binary executable
+RUN chmod +x /app/telegramarr
+
+# Switch to non-root user
+USER telegramarr
+
+# Expose port for the application
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget --quiet --tries=1 --spider http://localhost:8080/ || exit 1
+
+# Use tini as entrypoint to handle signals properly
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# Default command - runs the application
+CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
+
+# ============================================
+# Build and run instructions:
+# ============================================
+# 1. Build Docker image (includes full build):
+#    docker build -f Dockerfile.dev.arm64 -t telegramarr:dev-arm64 .
+#
+# 2. Run container for testing:
+#    docker run -d \
+#      --name telegramarr-dev-arm64 \
+#      -p 8080:8080 \
+#      -v $(pwd)/config.yaml:/app/config.yaml:ro \
+#      -v $(pwd)/data:/app/data \
+#      -e TZ=UTC \
+#      telegramarr:dev-arm64
+#
+# 3. View logs:
+#    docker logs -f telegramarr-dev-arm64
+#
+# ============================================
+# Notes:
+# ============================================
+# - ARM64 (aarch64) Alpine-based image (minimal)
+# - QEMU user-static: Enables x86-64 RAR binary execution on ARM64
+# - RAR binaries: x86-64 versions run via QEMU emulation
+# - Go binary: Compiled natively for ARM64 (no emulation needed)
+# - Go 1.25 (required by go.mod)
+# - Image size: ~900MB-1GB (with build tools)
+# - Build time: ~15-20 minutes on ARM64 system
+#
+# Cross-compile from x86 with buildx:
+#   docker buildx build --platform linux/arm64 -f Dockerfile.dev.arm64 -t telegramarr:dev-arm64 .

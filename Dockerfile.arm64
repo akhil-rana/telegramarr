@@ -1,0 +1,79 @@
+# ARM64 runtime-only Dockerfile (Alpine-based, minimal)
+# Uses QEMU to run x86-64 RAR binaries on ARM64 systems
+# Expects pre-built ARM64 artifacts from build.sh in build/prod/
+
+FROM arm64v8/alpine:latest
+
+WORKDIR /app
+
+# Install runtime dependencies (minimal)
+RUN apk add --no-cache \
+    libc6-compat \
+    libstdc++ \
+    p7zip \
+    ca-certificates \
+    tzdata \
+    tini \
+    curl \
+    tar \
+    qemu-user-static
+
+# Download and extract RAR binaries (x86-64)
+# QEMU will handle execution on ARM64
+RUN curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
+    tar xf /tmp/rarlinux.tar.gz -C /tmp && \
+    install -v -m755 /tmp/rar/unrar /usr/local/bin && \
+    install -v -m755 /tmp/rar/rar /usr/local/bin && \
+    rm -rf /tmp/rarlinux.tar.gz /tmp/rar && \
+    which unrar && which rar && \
+    unrar 2>&1 | head -2 && \
+    rar 2>&1 | head -2
+
+# Create non-root user for security
+RUN addgroup -g 1000 -S telegramarr && \
+    adduser -u 1000 -S telegramarr -G telegramarr
+
+# Copy pre-built Go binary for ARM64 (must be compiled for ARM64)
+COPY build/prod/telegramarr /app/
+
+# Copy pre-built frontend artifacts
+COPY build/prod/dist /app/src/ui/dist
+
+# Create necessary directories with correct permissions
+RUN mkdir -p /app/data /app/temp && \
+    chown -R telegramarr:telegramarr /app && \
+    chmod 755 /app/data /app/temp /app/telegramarr
+
+# Make binary executable
+RUN chmod +x /app/telegramarr
+
+# Switch to non-root user
+USER telegramarr
+
+# Expose port for the application
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget --quiet --tries=1 --spider http://localhost:8080/ || exit 1
+
+# Use tini as entrypoint to handle signals properly
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# Default command - runs the application
+CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
+
+# ============================================
+# Notes:
+# ============================================
+# - ARM64 (aarch64) Alpine-based image (minimal, ~100MB)
+# - QEMU user-static: Enables x86-64 binary execution on ARM64
+# - RAR binaries: x86-64 versions run via QEMU emulation
+# - Go binary: MUST be compiled for ARM64 (native, no emulation)
+# - Image size: ~140-180MB (Alpine ARM64 + Go binary + frontend + QEMU)
+#
+# Build for ARM64:
+#   docker build -f Dockerfile.arm64 -t telegramarr:latest-arm64 .
+#
+# Cross-compile from x86 with buildx:
+#   docker buildx build --platform linux/arm64 -f Dockerfile.arm64 -t telegramarr:latest-arm64 .

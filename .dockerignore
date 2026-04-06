@@ -1,24 +1,48 @@
-# Start with ignoring everything
-*
-!*/
+# Git
+.git
+.gitignore
+.github
 
-# Then specifically allow what we need
-!Dockerfile
-!.dockerignore
-!build/
-!build/prod/
-!build/prod/**
-!go.mod
-!go.sum
-!src/
-!src/**
+# Development & Test
+test/
+temp/
+teldrive/
+src-old/
+bin/
+data/
+*.log
+*.swp
+*.swo
 
-# But exclude some things within src/
+# Node/npm
 src/ui/node_modules/
 src/ui/dist/
-src/cmd/*/
-src/internal/*/
+src/ui/.next/
+src/ui/coverage/
 
-# Exclude everything else in build/ except prod/
+# Build artifacts (exclude all but prod)
 build/*
 !build/prod/
+!build/prod/**
+
+# Go build artifacts
+*.o
+*.a
+*.so
+.go/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Docker
+docker-compose.override.yml
