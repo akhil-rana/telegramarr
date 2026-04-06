@@ -1,5 +1,5 @@
 # ARM64 Development Dockerfile - builds and runs everything in container
-# Alpine-based, minimal, uses QEMU for x86-64 RAR binary emulation
+# Alpine-based, minimal, uses multiarch/qemu-user-static for x86-64 RAR binary emulation
 
 FROM arm64v8/golang:1.25-alpine AS base
 
@@ -17,8 +17,11 @@ RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     tini \
-    libc6-compat \
-    qemu-user-static
+    libc6-compat
+
+# Copy QEMU static binary from multiarch/qemu-user-static image
+# This enables x86-64 binary execution on ARM64 systems
+COPY --from=multiarch/qemu-user-static:latest /usr/bin/qemu-x86_64-static /usr/bin/qemu-x86_64-static
 
 # Download and extract RAR binaries (x86-64)
 # QEMU will handle execution on ARM64
@@ -111,7 +114,7 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 # Notes:
 # ============================================
 # - ARM64 (aarch64) Alpine-based image (minimal)
-# - QEMU user-static: Enables x86-64 RAR binary execution on ARM64
+# - QEMU x86_64 static: From multiarch/qemu-user-static for x86-64 RAR binary emulation
 # - RAR binaries: x86-64 versions run via QEMU emulation
 # - Go binary: Compiled natively for ARM64 (no emulation needed)
 # - Go 1.25 (required by go.mod)
