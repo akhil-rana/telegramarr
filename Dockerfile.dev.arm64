@@ -2,7 +2,7 @@
 # Alpine-based, minimal, native ARM64 Go build
 # Note: RAR tools not available for ARM64
 
-FROM arm64v8/golang:1.25-alpine AS base
+FROM golang:1.25-alpine AS base
 
 # Install build dependencies (minimal)
 RUN apk add --no-cache \
@@ -24,6 +24,14 @@ WORKDIR /app
 
 # Copy entire source code
 COPY . .
+
+# Debug: Check what was copied
+RUN echo "=== Checking copied files ===" && \
+    ls -la /app/ && \
+    echo "=== Checking src directory ===" && \
+    ls -la /app/src/ && \
+    echo "=== Checking src/ui directory ===" && \
+    ls -la /app/src/ui/ || echo "src/ui does not exist"
 
 # Build React frontend
 RUN echo "Building React frontend..." && \
