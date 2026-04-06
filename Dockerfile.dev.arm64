@@ -1,8 +1,9 @@
 # ARM64 Development Dockerfile - builds and runs everything in container
-# Alpine-based, minimal, native ARM64 Go build + x86-64 RAR binary emulation via QEMU
+# Alpine-based, minimal, native ARM64 Go build
+# Uses ilteoood/rar-on-arm Docker image to get RAR binaries for ARM64
 
-# Get QEMU x86_64 binary for RAR binary emulation on ARM64
-FROM multiarch/qemu-user-static:x86_64-aarch64 as qemu
+# Get RAR binaries for ARM64
+FROM ilteoood/rar-on-arm:latest as rar
 
 FROM arm64v8/golang:1.25-alpine AS base
 
@@ -22,19 +23,14 @@ RUN apk add --no-cache \
     tini \
     libc6-compat
 
-# Copy QEMU x86_64 binary from multiarch image for RAR binary emulation
-COPY --from=qemu /usr/bin/qemu-x86_64-static /usr/bin/qemu-x86_64-static
+# Copy RAR binaries from rar-on-arm image
+COPY --from=rar /usr/bin/rar /usr/local/bin/rar
+COPY --from=rar /usr/bin/unrar /usr/local/bin/unrar
 
-# Download and extract x86-64 RAR binaries
-# QEMU will transparently handle execution on ARM64
-RUN curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
-    tar xf /tmp/rarlinux.tar.gz -C /tmp && \
-    install -v -m755 /tmp/rar/unrar /usr/local/bin && \
-    install -v -m755 /tmp/rar/rar /usr/local/bin && \
-    rm -rf /tmp/rarlinux.tar.gz /tmp/rar && \
-    which unrar && which rar && \
-    unrar 2>&1 | head -2 && \
-    rar 2>&1 | head -2
+# Verify RAR tools are available
+RUN which rar && which unrar && \
+    rar 2>&1 | head -2 && \
+    unrar 2>&1 | head -2
 
 WORKDIR /app
 
@@ -117,11 +113,16 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 # ============================================
 # - ARM64 (aarch64) Alpine-based image (minimal)
 # - Go binary: Compiled natively for ARM64 (native execution)
-# - QEMU x86_64: From multiarch/qemu-user-static:x86_64-aarch64
-# - RAR binaries: x86-64 versions run via QEMU emulation (just like Dockerfile.arm64)
+# - RAR tools: From ilteoood/rar-on-arm Docker image (pre-compiled for ARM64)
+# - 7z: From p7zip package for alternative compression
 # - Go 1.25 (required by go.mod)
 # - Image size: ~900MB-1GB (with build tools)
 # - Build time: ~15-20 minutes on ARM64 system
+#
+# RAR support on ARM64:
+#   - Extract RAR files: Use unrar
+#   - Create RAR files: Use rar
+#   - Both tools natively available via ilteoood/rar-on-arm
 #
 # Cross-compile from x86 with buildx:
 #   docker buildx build --platform linux/arm64 -f Dockerfile.dev.arm64 -t telegramarr:dev-arm64 .
