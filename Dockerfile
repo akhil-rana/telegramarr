@@ -50,12 +50,8 @@ FROM alpine:latest
 
 WORKDIR /app
 
-# Install ONLY runtime dependencies (no build tools)
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    tini \
-    p7zip \
+# Install wget for healthcheck
+RUN apk add --no-cache wget \
     && rm -rf /var/cache/apk/*
 
 # Install RAR only on amd64 (ARM64 uses 7z)
@@ -91,9 +87,9 @@ USER telegramarr
 # Expose port (set in config.yaml, default: 8987)
 EXPOSE 8987
 
-# Health check (no wget, use lightweight alternative)
+# Health check using wget
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD test -S /dev/null || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8987/api/auth/status || exit 1
 
 # Tini entrypoint for proper signal handling
 ENTRYPOINT ["/sbin/tini", "--"]

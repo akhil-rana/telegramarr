@@ -100,6 +100,33 @@ server:
 
 For all configuration options, see `example.config.yaml`.
 
+## Radarr and Sonarr Integration
+
+For proper file synchronization between Radarr/Sonarr and Telegramarr, **ensure their `/movies` and `/tvshows` volumes are also mounted with `:shared` propagation**. This allows Telegramarr to detect files immediately when they're downloaded.
+
+### If Radarr/Sonarr are in Docker:
+
+```bash
+docker run -d \
+  --name=radarr \
+  -v /path/to/movies:/movies:shared \  # ← Add :shared here
+  ...
+```
+
+### If using Docker Compose:
+
+```yaml
+services:
+  radarr:
+    volumes:
+      - /path/to/movies:/movies:shared  # ← Add :shared here
+  sonarr:
+    volumes:
+      - /path/to/tvshows:/tvshows:shared  # ← Add :shared here
+```
+
+Without `:shared` propagation, Telegramarr may not detect newly downloaded files immediately, causing uploads to fail or be delayed.
+
 ## Setting Up Webhooks
 
 Once authenticated, configure your Radarr and Sonarr instances:
