@@ -14,11 +14,12 @@ data/
 *.swp
 *.swo
 
-# Node/npm
+# Node/npm (exclude build artifacts only, keep source files)
 src/ui/node_modules/
 src/ui/dist/
 src/ui/.next/
 src/ui/coverage/
+src/ui/.vite/
 
 # Build artifacts (exclude all but prod)
 build/*
