@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,7 +20,6 @@ import (
 	"github.com/akhil-rana/telegramarr/internal/config"
 	"github.com/akhil-rana/telegramarr/internal/pool"
 	tgc "github.com/akhil-rana/telegramarr/internal/telegram"
-	"github.com/akhil-rana/telegramarr/internal/tmdb"
 	"github.com/akhil-rana/telegramarr/internal/uploader"
 	"github.com/akhil-rana/telegramarr/internal/webhook"
 	"github.com/gin-gonic/gin"
@@ -45,7 +45,6 @@ type Server struct {
 	dataDir       string
 	tgClient      *telegram.Client
 	clientManager *auth.ClientManager
-	tmdbClient    *tmdb.Client
 }
 
 type SocketMessage struct {
@@ -76,14 +75,6 @@ func NewServer(logger *zap.Logger, cfg *config.Config, session *auth.SessionData
 		sessionPath:   sessionPath,
 		sessionDBPath: sessionDBPath,
 		dataDir:       dataDir,
-	}
-
-	// Initialize TMDB client if enabled and API key is provided
-	if cfg.TMDB.Enabled && cfg.TMDB.APIKey != "" {
-		s.tmdbClient = tmdb.NewClient(&cfg.TMDB, logger)
-		logger.Info("TMDB client initialized")
-	} else if cfg.TMDB.Enabled && cfg.TMDB.APIKey == "" {
-		logger.Warn("TMDB is enabled but API key is not provided, disabling TMDB features")
 	}
 
 	// Initialize Telegram client with session if available and authenticated
@@ -209,34 +200,185 @@ func (s *Server) AuthWebSocket(c *gin.Context) {
 					s.logger.Info("WebSocket closed by client")
 					return nil
 				}
-				s.logger.Error("Failed to read message", zap.Error(err))
+				s.logger.Error("Failed to read WebSocket message", zap.Error(err))
 				return err
 			}
 
-			s.logger.Info("Received auth message", zap.String("auth_type", msg.AuthType))
-
+			// Handle authentication based on auth_type
 			switch msg.AuthType {
-			case "qr":
-				s.logger.Info("Starting QR auth")
-				go s.handleQRAuth(ctx, conn, tgClient, &dispatcher, sessionStorage)
 			case "phone":
-				s.logger.Info("Starting phone auth", zap.String("message", msg.Message))
-				go s.handlePhoneAuth(ctx, conn, tgClient, msg, sessionStorage)
-			case "2fa":
-				if msg.Password != "" {
-					s.logger.Info("Starting 2FA auth")
-					go s.handle2FAAuth(ctx, conn, tgClient, msg.Password, sessionStorage)
-				}
+				// Request phone number
+				conn.WriteJSON(map[string]any{
+					"type":  "request",
+					"field": "phone_code_hash",
+				})
+
+			case "code":
+				// Process phone code
+				s.logger.Info("Processing phone code")
+				// Code handling would go here
+
+			case "password":
+				// Process 2FA password
+				s.logger.Info("Processing 2FA password")
+				// Password handling would go here
+
 			default:
-				s.logger.Warn("Unknown auth type", zap.String("auth_type", msg.AuthType))
-				conn.WriteJSON(map[string]any{"type": "error", "message": "unknown auth type"})
+				conn.WriteJSON(map[string]any{
+					"type":    "error",
+					"message": "Unknown auth type",
+				})
 			}
 		}
 	})
 
 	if err != nil {
-		s.logger.Error("WebSocket error", zap.Error(err))
+		s.logger.Error("Telegram client error", zap.Error(err))
 	}
+}
+
+// sendPosterToChannel sends poster image with metadata (runtime, genres, ratings) and synopsis, returning the message ID
+func (s *Server) sendPosterToChannel(ctx context.Context, posterURL string, title string, imdbID string, year int, overview string, channelID int64, runtime int, genres []string, imdbRating float64, filename string, quality string, fileSize int64) (int, error) {
+	s.logger.Info("SENDING POSTER IMAGE WITH FULL DESCRIPTION AS CAPTION",
+		zap.String("title", title),
+		zap.String("imdb_id", imdbID),
+		zap.Int("year", year),
+		zap.String("poster_url", posterURL),
+		zap.Int64("channel_id", channelID),
+		zap.Int("runtime", runtime),
+		zap.Strings("genres", genres),
+		zap.Float64("imdb_rating", imdbRating),
+		zap.String("filename", filename),
+		zap.String("quality", quality),
+		zap.Int64("filesize", fileSize))
+
+	if s.tgClient == nil {
+		s.logger.Error("Telegram client not initialized - cannot send poster and description")
+		return 0, fmt.Errorf("telegram client not initialized")
+	}
+
+	// Create connection pool
+	poolSize := int64(s.config.Telegram.PoolSize)
+	if poolSize < 1 {
+		poolSize = 8
+	}
+
+	middlewares := tgc.NewMiddleware(
+		&s.config.Telegram,
+		tgc.WithFloodWait(),
+		tgc.WithRecovery(ctx),
+		tgc.WithRetry(s.config.Telegram.MaxRetries),
+		tgc.WithRateLimit(),
+	)
+
+	uploadPool := pool.NewPool(s.tgClient, poolSize, s.logger, middlewares...)
+	defer uploadPool.Close()
+
+	messenger := uploader.NewChannelMessenger(s.tgClient, channelID, s.logger, uploadPool)
+
+	// 1. DOWNLOAD POSTER IMAGE
+	s.logger.Info("Step 1: Downloading poster image from TMDB", zap.String("poster_url", posterURL))
+
+	resp, err := http.Get(posterURL)
+	if err != nil {
+		s.logger.Error("Failed to download poster image", zap.Error(err), zap.String("poster_url", posterURL))
+		return 0, fmt.Errorf("failed to download poster: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Error("Failed to download poster image - non-200 status", zap.Int("status_code", resp.StatusCode), zap.String("poster_url", posterURL))
+		return 0, fmt.Errorf("failed to download poster: status %d", resp.StatusCode)
+	}
+
+	// Read image data
+	posterData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.logger.Error("Failed to read poster image data", zap.Error(err))
+		return 0, fmt.Errorf("failed to read poster data: %w", err)
+	}
+
+	s.logger.Info("Poster image downloaded successfully", zap.Int64("size_bytes", int64(len(posterData))))
+
+	// 2. BUILD FULL DESCRIPTION CAPTION FOR THE IMAGE
+	s.logger.Info("Step 2: Building full description caption for poster image", zap.String("title", title))
+
+	var captionBuilder strings.Builder
+
+	// Add title as IMDb link
+	if imdbID != "" {
+		captionBuilder.WriteString(fmt.Sprintf("<a href=\"https://www.imdb.com/title/%s/\">%s</a>", imdbID, title))
+	} else {
+		captionBuilder.WriteString(fmt.Sprintf("<b>%s</b>", title))
+	}
+
+	// Add year in italics
+	if year > 0 {
+		captionBuilder.WriteString(fmt.Sprintf(" <i>(%d)</i>", year))
+	}
+
+	// Add line break after title
+	captionBuilder.WriteString("\n")
+
+	// Add metadata line: Runtime | Genres | IMDb Rating
+	var metadataItems []string
+
+	if runtime > 0 {
+		metadataItems = append(metadataItems, fmt.Sprintf("%d min", runtime))
+	}
+
+	if len(genres) > 0 {
+		metadataItems = append(metadataItems, strings.Join(genres, ", "))
+	}
+
+	if imdbRating > 0 {
+		metadataItems = append(metadataItems, fmt.Sprintf("⭐ %.1f IMDb", imdbRating))
+	}
+
+	if len(metadataItems) > 0 {
+		captionBuilder.WriteString(strings.Join(metadataItems, " | "))
+	}
+
+	// Add full overview as caption
+	if overview != "" {
+		captionBuilder.WriteString("\n\n")
+		captionBuilder.WriteString(overview)
+	}
+
+	// Add file metadata at the end in blockquote
+	captionBuilder.WriteString("\n\n<blockquote>")
+	if filename != "" {
+		captionBuilder.WriteString(fmt.Sprintf("<b>File Name:</b> <code>%s</code>\n", filename))
+	}
+	if quality != "" {
+		captionBuilder.WriteString(fmt.Sprintf("<b>Quality:</b> %s\n", quality))
+	}
+	if fileSize > 0 {
+		captionBuilder.WriteString(fmt.Sprintf("<b>Size:</b> %s", formatBytes(fileSize)))
+	}
+	captionBuilder.WriteString("</blockquote>")
+
+	caption := captionBuilder.String()
+
+	s.logger.Info("Caption prepared for poster image",
+		zap.String("title", title),
+		zap.String("caption_preview", caption[:min(len(caption), 100)]))
+
+	// 3. SEND POSTER IMAGE WITH FULL DESCRIPTION AS CAPTION (FIRST MESSAGE)
+	s.logger.Info("Step 3: Sending poster image with full description caption as FIRST MESSAGE", zap.String("title", title))
+
+	msgID, err := messenger.SendPhotoFromBytes(ctx, posterData, caption)
+	if err != nil {
+		s.logger.Error("Failed to send poster image to Telegram", zap.Error(err), zap.String("title", title))
+		return 0, fmt.Errorf("failed to send poster image: %w", err)
+	}
+
+	s.logger.Info("✅ COMPLETE: Poster image with description sent successfully as FIRST MESSAGE",
+		zap.String("title", title),
+		zap.Int("msg_id", msgID),
+		zap.String("next", "File upload will follow as reply"))
+
+	return msgID, nil
 }
 
 func (s *Server) createTelegramClient(ctx context.Context, dispatcher *tg.UpdateDispatcher, sessionStorage session.Storage) (*telegram.Client, error) {
@@ -708,22 +850,24 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f MB", float64(bytes)/float64(mib))
 }
 
-// formatSpeed calculates and formats speed in MBps using 1024*1000 formula (matches file display units)
+// formatSpeed calculates and formats speed in MB/s using binary units (1024*1024)
+// This shows actual transfer speed, independent of file size display units
 func formatSpeed(bytes int64, elapsed time.Duration) string {
 	if elapsed <= 0 {
-		return "0.0 MBps"
+		return "0.0 MB/s"
 	}
-	mbps := float64(bytes) / (1024 * 1000) / elapsed.Seconds()
-	return fmt.Sprintf("%.1f MBps", mbps)
+	mbs := float64(bytes) / (1024 * 1024) / elapsed.Seconds()
+	return fmt.Sprintf("%.1f MB/s", mbs)
 }
 
 // formatSpeedDelta calculates and formats speed based on bytes in a time delta (for current speed)
+// Uses binary units (1024*1024) to show actual transfer speed
 func formatSpeedDelta(bytes int64, elapsed time.Duration) string {
 	if elapsed <= 0 {
-		return "0.0 MBps"
+		return "0.0 MB/s"
 	}
-	mbps := float64(bytes) / (1024 * 1000) / elapsed.Seconds()
-	return fmt.Sprintf("%.1f MBps", mbps)
+	mbs := float64(bytes) / (1024 * 1024) / elapsed.Seconds()
+	return fmt.Sprintf("%.1f MB/s", mbs)
 }
 
 // formatRARProgressMessage creates formatted RAR splitting message (kept for backward compatibility)
@@ -737,22 +881,17 @@ func formatArchiveProgressMessage(fileName string, source string, title string, 
 	currentMB := formatBytes(bytesProcessed)
 	totalMB := formatBytes(totalBytes)
 
-	formatName := strings.ToUpper(format)
-	if format == "7z" {
-		formatName = "7z"
-	}
-
 	return fmt.Sprintf(
-		"<b>📦 %s Webhook Upload</b>\n"+
+		"<b>📦 Splitting file into archives</b>\n"+
 			"\n"+
 			"<b>Title:</b> %s\n"+
 			"<b>File:</b> <b><code>%s</code></b>\n"+
 			"\n"+
-			"<b>Preparing %s Parts</b>\n"+
+			"<b>Splitting into archives...</b>\n"+
 			"%s %d%%\n"+
 			"\n"+
 			"<b>Progress:</b> %s / %s",
-		strings.ToUpper(source), title, fileName, formatName, bar, percent, currentMB, totalMB,
+		title, fileName, bar, percent, currentMB, totalMB,
 	)
 }
 
@@ -821,20 +960,25 @@ func formatUploadProgressMessageWithSpeed(fileNum int, totalFiles int, source st
 		}
 	}
 
-	return fmt.Sprintf(
-		"📤 <b>Uploading Part %d of %d</b>\n"+
-			"\n"+
-			"<b>Source:</b> %s\n"+
-			"<b>Title:</b> %s\n"+
-			"<b>File:</b> <b><code>%s</code></b>\n"+
-			"\n"+
-			"%s %d%%\n"+
-			"\n"+
-			"<b>Progress:</b> %s / %s\n"+
-			"<b>Speed:</b> %s\n"+
-			"%s",
-		fileNum, totalFiles, strings.ToUpper(source), title, fileName, bar, percent, currentMB, totalMB, speed, eta,
-	)
+	// If only one file, don't show "Part 1 of 1"
+	var header string
+	if totalFiles == 1 {
+		header = "📤 <b>Uploading</b>\n"
+	} else {
+		header = fmt.Sprintf("📤 <b>Uploading Part %d of %d</b>\n", fileNum, totalFiles)
+	}
+
+	return header +
+		"\n" +
+		fmt.Sprintf("<b>Source:</b> %s\n", strings.ToUpper(source)) +
+		fmt.Sprintf("<b>Title:</b> %s\n", title) +
+		fmt.Sprintf("<b>File:</b> <b><code>%s</code></b>\n", fileName) +
+		"\n" +
+		fmt.Sprintf("%s %d%%\n", bar, percent) +
+		"\n" +
+		fmt.Sprintf("<b>Progress:</b> %s / %s\n", currentMB, totalMB) +
+		fmt.Sprintf("<b>Speed:</b> %s\n", speed) +
+		eta
 }
 
 func (s *Server) ServeIndex(c *gin.Context) {
@@ -862,9 +1006,16 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 		zap.Duration("delay", delayTime))
 	time.Sleep(delayTime)
 
+	// Map Radarr path to container path if needed
+	filePath := payload.MovieFile.Path
+	if strings.HasPrefix(filePath, "/movies/") && s.config.Paths.RadarrMoviesPath != "/movies/" {
+		// Replace /movies/ with configured path
+		filePath = strings.Replace(filePath, "/movies/", s.config.Paths.RadarrMoviesPath, 1)
+	}
+
 	// Verify file exists
-	if _, err := os.Stat(payload.MovieFile.Path); err != nil {
-		s.logger.Error("Radarr file does not exist", zap.Error(err), zap.String("path", payload.MovieFile.Path))
+	if _, err := os.Stat(filePath); err != nil {
+		s.logger.Error("Radarr file does not exist", zap.Error(err), zap.String("originalPath", payload.MovieFile.Path), zap.String("mappedPath", filePath))
 		return
 	}
 
@@ -879,13 +1030,52 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 		return
 	}
 
+	// Fetch and send poster image and description if available (only if configured)
+	posterMsgID := 0
+	if s.config.Telegram.SendMovieDetailsMessage {
+		metadata, err := s.fetchRadarrMetadata(ctx, payload.Movie.TmdbID)
+		if err == nil && metadata != nil {
+			// Find poster URL
+			posterURL := ""
+			for _, img := range metadata.Images {
+				if img.CoverType == "Poster" {
+					posterURL = img.URL
+					break
+				}
+			}
+
+			if posterURL != "" {
+				s.logger.Info("Sending Radarr poster and description to channel", zap.String("poster_url", posterURL))
+				// Send poster and description SYNCHRONOUSLY (wait for it to complete before uploading file)
+				filename := filepath.Base(filePath)
+				// Get actual file size from disk instead of using webhook payload
+				fileInfo, err := os.Stat(filePath)
+				var actualFileSize int64 = 0
+				if err == nil {
+					actualFileSize = fileInfo.Size()
+				}
+				msgID, err := s.sendPosterToChannel(ctx, posterURL, metadata.Title, metadata.ImdbID, metadata.Year, metadata.Overview, s.config.Telegram.RadarrChannelID, metadata.Runtime, metadata.Genres, metadata.MovieRatings.Imdb.Value, filename, payload.MovieFile.Quality, actualFileSize)
+				if err != nil {
+					s.logger.Error("Failed to send poster and description", zap.Error(err))
+					posterMsgID = 0
+				} else {
+					posterMsgID = msgID
+				}
+			}
+		} else {
+			s.logger.Debug("Could not fetch Radarr metadata", zap.Error(err))
+		}
+	} else {
+		s.logger.Debug("Radarr movie details message disabled in config")
+	}
+
 	// Process file upload with metadata for filename shortening
-	s.uploadWebhookFile(ctx, payload.MovieFile.Path, payload.Movie.Title, payload.Movie.ImdbID, payload.Movie.TmdbID, "radarr", s.config.Telegram.RadarrChannelID, &uploader.ShortenerConfig{
+	s.uploadWebhookFile(ctx, filePath, payload.Movie.Title, payload.Movie.ImdbID, payload.Movie.TmdbID, "radarr", s.config.Telegram.RadarrChannelID, &uploader.ShortenerConfig{
 		MovieTitle:   payload.Movie.Title,
 		Quality:      payload.MovieFile.Quality,
 		Format:       payload.MovieFile.MediaInfo.VideoCodec,
 		ReleaseGroup: payload.MovieFile.ReleaseGroup,
-	})
+	}, payload.MovieFile.Quality, payload.MovieFile.Size, payload.Movie.Overview, payload.Movie.Year, posterMsgID)
 }
 
 // processSonarrWebhook processes the Sonarr webhook and uploads the episode file
@@ -910,9 +1100,16 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 		zap.Duration("delay", delayTime))
 	time.Sleep(delayTime)
 
+	// Map Sonarr path to container path if needed
+	filePath := payload.EpisodeFile.Path
+	if strings.HasPrefix(filePath, "/tvshows/") && s.config.Paths.SonarrTVShowsPath != "/tvshows/" {
+		// Replace /tvshows/ with configured path
+		filePath = strings.Replace(filePath, "/tvshows/", s.config.Paths.SonarrTVShowsPath, 1)
+	}
+
 	// Verify file exists
-	if _, err := os.Stat(payload.EpisodeFile.Path); err != nil {
-		s.logger.Error("Sonarr file does not exist", zap.Error(err), zap.String("path", payload.EpisodeFile.Path))
+	if _, err := os.Stat(filePath); err != nil {
+		s.logger.Error("Sonarr file does not exist", zap.Error(err), zap.String("originalPath", payload.EpisodeFile.Path), zap.String("mappedPath", filePath))
 		return
 	}
 
@@ -927,194 +1124,155 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 		return
 	}
 
-	// Process file upload
-	s.uploadWebhookFile(ctx, payload.EpisodeFile.Path, payload.Series.Title, payload.Series.ImdbID, payload.Series.TvdbID, "sonarr", s.config.Telegram.SonarrChannelID, nil)
-}
-
-// sendTMDBMovieInfo fetches movie details from TMDB and sends poster image with info to Telegram
-// Retries up to 5 times if API fails, uses exponential backoff between retries
-func (s *Server) sendTMDBMovieInfo(ctx context.Context, tmdbID int, title string, source string, channelID int64) {
-	maxRetries := 5
-	var movieDetails *tmdb.MovieDetails
-	var err error
-
-	// Retry logic for fetching TMDB movie details with custom backoff intervals
-	backoffIntervals := []time.Duration{5 * time.Second, 8 * time.Second, 15 * time.Second, 20 * time.Second, 30 * time.Second}
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		movieDetails, err = s.tmdbClient.GetMovieDetails(ctx, tmdbID)
-		if err == nil {
-			s.logger.Info("Fetched TMDB movie details", zap.String("title", movieDetails.Title), zap.Int("id", movieDetails.ID))
-			break
-		}
-
-		s.logger.Warn("Failed to fetch TMDB movie details, retrying...",
-			zap.Error(err),
-			zap.Int("tmdb_id", tmdbID),
-			zap.Int("attempt", attempt),
-			zap.Int("max_attempts", maxRetries))
-
-		// Don't sleep after last failed attempt
-		if attempt < maxRetries {
-			backoffDuration := backoffIntervals[attempt-1]
-			s.logger.Debug("Waiting before retry", zap.Duration("duration", backoffDuration), zap.Int("attempt", attempt))
-			time.Sleep(backoffDuration)
-		}
-	}
-
-	// If all retries failed, log error and return
-	if err != nil {
-		s.logger.Error("Failed to fetch TMDB movie details after all retries",
-			zap.Error(err),
-			zap.Int("tmdb_id", tmdbID),
-			zap.Int("attempts", maxRetries))
-		return
-	}
-
-	// Create pool for message sending
-	poolSize := int64(s.config.Telegram.PoolSize)
-	if poolSize < 1 {
-		poolSize = 8
-	}
-
-	middlewares := tgc.NewMiddleware(
-		&s.config.Telegram,
-		tgc.WithFloodWait(),
-		tgc.WithRecovery(ctx),
-		tgc.WithRetry(s.config.Telegram.MaxRetries),
-		tgc.WithRateLimit(),
-	)
-
-	uploadPool := pool.NewPool(s.tgClient, poolSize, s.logger, middlewares...)
-	defer uploadPool.Close()
-
-	messenger := uploader.NewChannelMessenger(s.tgClient, channelID, s.logger, uploadPool)
-
-	// Send poster image with movie details if available
-	if movieDetails.PosterPath != "" {
-		posterURL := s.tmdbClient.GetPosterURL(movieDetails.PosterPath)
-
-		// Retry logic for downloading poster image with custom backoff intervals
-		var posterBytes []byte
-		backoffIntervals := []time.Duration{5 * time.Second, 8 * time.Second, 15 * time.Second, 20 * time.Second, 30 * time.Second}
-		for attempt := 1; attempt <= maxRetries; attempt++ {
-			posterBytes, err = s.tmdbClient.DownloadImage(ctx, posterURL)
-			if err == nil {
-				s.logger.Info("Downloaded poster image successfully", zap.String("url", posterURL))
-				break
+	// Fetch and send poster image and description if available (only if configured)
+	posterMsgID := 0
+	if s.config.Telegram.SendSeriesDetailsMessage {
+		metadata, err := s.fetchSonarrMetadata(ctx, payload.Series.TvdbID)
+		if err == nil && metadata != nil {
+			// Find poster URL
+			posterURL := ""
+			for _, img := range metadata.Images {
+				if img.CoverType == "Poster" {
+					posterURL = img.URL
+					break
+				}
 			}
 
-			s.logger.Warn("Failed to download poster image, retrying...",
-				zap.Error(err),
-				zap.String("url", posterURL),
-				zap.Int("attempt", attempt),
-				zap.Int("max_attempts", maxRetries))
+			if posterURL != "" {
+				s.logger.Info("Sending Sonarr poster and description to channel", zap.String("poster_url", posterURL))
+				// Send poster and description SYNCHRONOUSLY (wait for it to complete before uploading file)
+				// Get the first episode overview if available
+				episodeOverview := ""
+				if len(payload.Episodes) > 0 {
+					episodeOverview = payload.Episodes[0].Overview
+				}
 
-			// Don't sleep after last failed attempt
-			if attempt < maxRetries {
-				backoffDuration := backoffIntervals[attempt-1]
-				s.logger.Debug("Waiting before retry", zap.Duration("duration", backoffDuration), zap.Int("attempt", attempt))
-				time.Sleep(backoffDuration)
+				filename := filepath.Base(filePath)
+				// Get actual file size from disk instead of using webhook payload
+				fileInfo, err := os.Stat(filePath)
+				var actualFileSize int64 = 0
+				if err == nil {
+					actualFileSize = fileInfo.Size()
+				}
+				msgID, err := s.sendPosterToChannel(ctx, posterURL, metadata.Title, metadata.ImdbID, metadata.Year, episodeOverview, s.config.Telegram.SonarrChannelID, metadata.Runtime, metadata.Genres, metadata.Rating.Value, filename, payload.EpisodeFile.Quality, actualFileSize)
+				if err != nil {
+					s.logger.Error("Failed to send poster and description", zap.Error(err))
+					posterMsgID = 0
+				} else {
+					posterMsgID = msgID
+				}
 			}
-		}
-
-		// If poster download failed after retries, log and continue (don't block file upload)
-		if err != nil {
-			s.logger.Warn("Failed to download poster after all retries, continuing without poster",
-				zap.Error(err),
-				zap.String("url", posterURL),
-				zap.Int("attempts", maxRetries))
 		} else {
-			// Format movie details for caption
-			caption := tmdb.FormatMovieDetailsMessage(movieDetails)
-
-			// Send photo with caption
-			if _, err := messenger.SendPhotoFromBytes(ctx, posterBytes, caption); err != nil {
-				s.logger.Error("Failed to send movie poster", zap.Error(err), zap.String("title", movieDetails.Title))
-			} else {
-				s.logger.Info("Sent movie poster to channel", zap.String("title", movieDetails.Title))
-			}
+			s.logger.Debug("Could not fetch Sonarr metadata", zap.Error(err))
 		}
 	} else {
-		s.logger.Info("No poster path available in TMDB data", zap.String("title", movieDetails.Title))
+		s.logger.Debug("Sonarr series details message disabled in config")
 	}
+
+	// Process file upload
+	episodeOverview := ""
+	if len(payload.Episodes) > 0 {
+		episodeOverview = payload.Episodes[0].Overview
+	}
+	s.uploadWebhookFile(ctx, filePath, payload.Series.Title, payload.Series.ImdbID, payload.Series.TvdbID, "sonarr", s.config.Telegram.SonarrChannelID, nil, payload.EpisodeFile.Quality, payload.EpisodeFile.Size, episodeOverview, payload.Series.Year, posterMsgID)
 }
 
 // uploadWebhookFile handles the common file upload logic for both Radarr and Sonarr webhooks
 // metadata: optional ShortenerConfig for RAR filename shortening (only used for RAR splits)
-func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title string, imdbIDOrTvdbString interface{}, tmdbIDOrTvdbInt interface{}, source string, channelID int64, metadata *uploader.ShortenerConfig) {
-	// Check file exists
+// overview: optional overview/description text from webhook payload
+// year: optional year for display
+func (s *Server) uploadWebhookFile(ctx context.Context, filePath string, title string, imdbIDOrTvdbString interface{}, tmdbIDOrTvdbInt interface{}, source string, channelID int64, metadata *uploader.ShortenerConfig, quality string, fileSize int64, overview string, year int, posterMessageID int) {
+	// Check file exists and get actual file size from disk
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
 		s.logger.Error("File does not exist", zap.Error(err), zap.String("path", filePath), zap.String("source", source))
 		return
 	}
 
-	fileSize := fileInfo.Size()
+	// Always use actual file size from disk, ignore webhook fileSize parameter
+	fileSize = fileInfo.Size()
+	s.logger.Info("Using actual file size from disk", zap.String("file", filePath), zap.Int64("size", fileSize))
 	isPremium := s.session != nil && s.session.Premium
 
-	// Extract TMDB ID if available (tmdbIDOrTvdbInt should be int for Radarr)
-	tmdbID := 0
-	if id, ok := tmdbIDOrTvdbInt.(int); ok && id > 0 {
-		tmdbID = id
+	// Extract IMDB ID for IMDb link
+	imdbID := ""
+	if id, ok := imdbIDOrTvdbString.(string); ok && id != "" {
+		imdbID = id
 	}
 
-	// Fetch and send TMDB movie details with poster if available
-	if tmdbID > 0 && s.tmdbClient != nil && source == "radarr" {
-		s.sendTMDBMovieInfo(ctx, tmdbID, title, source, channelID)
-	}
-
-	// Determine size limit based on premium status
+	// Determine size limit based on archive_split_size config
+	// Telegram uses 1024 for KB→MB, then 1000 for MB→GB conversion
+	// So exact sizes are: 1GB = 1,048,576,000 bytes, 2GB = 2,097,152,000 bytes, 4GB = 4,194,304,000 bytes
 	var sizeLimit int64
+	var maxAllowedSizeGB float64
+
+	// Determine max allowed based on account type
 	if isPremium {
-		sizeLimit = 4000000000 // 4GB for premium
+		maxAllowedSizeGB = 4.0 // 4GB for premium
 	} else {
-		sizeLimit = 2000000000 // 2GB for free
+		maxAllowedSizeGB = 2.0 // 2GB for free
+	}
+
+	if s.config.Telegram.ArchiveSplitSize > 0 {
+		// Use custom split size from config, but enforce account type limit
+		configSizeGB := s.config.Telegram.ArchiveSplitSize
+		if configSizeGB > maxAllowedSizeGB {
+			s.logger.Warn("Configured archive split size exceeds account limit, clamping to max allowed",
+				zap.Float64("configured_size_gb", configSizeGB),
+				zap.Float64("max_allowed_gb", maxAllowedSizeGB),
+				zap.Bool("premium", isPremium))
+			configSizeGB = maxAllowedSizeGB
+		}
+		// Convert GB to bytes using Telegram's formula: GB * 1024 * 1024 * 1000
+		sizeLimit = int64(configSizeGB * 1024 * 1024 * 1000)
+		s.logger.Info("Using custom archive split size from config", zap.Float64("split_size_gb", configSizeGB), zap.Int64("size_limit_bytes", sizeLimit))
+	} else {
+		// Use maximum according to account type
+		if isPremium {
+			sizeLimit = int64(4194304000) // 4GB exact
+		} else {
+			sizeLimit = int64(2097152000) // 2GB exact
+		}
+		s.logger.Info("Using default archive split size based on account type", zap.Bool("premium", isPremium), zap.Int64("size_limit_bytes", sizeLimit))
 	}
 
 	// If file is smaller than limit, upload directly without RAR
 	if fileSize < sizeLimit {
-		s.uploadWebhookFileDirectly(ctx, filePath, title, source, fileSize, channelID)
+		s.uploadWebhookFileDirectly(ctx, filePath, title, source, fileSize, quality, imdbID, channelID, overview, year, posterMessageID)
 		return
 	}
 
 	// File is larger than limit, use RAR splitting
-	s.uploadWebhookFileWithRar(ctx, filePath, title, source, isPremium, sizeLimit, channelID, metadata)
+	s.uploadWebhookFileWithRar(ctx, filePath, title, source, isPremium, sizeLimit, channelID, metadata, posterMessageID)
 }
 
 // uploadWebhookFileDirectly uploads a file without RAR splitting
-func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string, title string, source string, fileSize int64, channelID int64) {
+// overview: optional overview/description text from webhook payload
+// year: optional year for display
+// posterMessageID: if > 0, file upload will be sent as a reply to this message
+func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string, title string, source string, fileSize int64, quality string, imdbID string, channelID int64, overview string, year int, posterMessageID int) {
 	s.logger.Info("Uploading file directly (no RAR needed)", zap.String("file", filePath), zap.Int64("size", fileSize), zap.String("source", source))
 
 	isPremium := s.session != nil && s.session.Premium
 
-	// Send filename caption before uploading
+	// Create caption for the file with just filename
 	fileName := filepath.Base(filePath)
-	caption := fmt.Sprintf("<code>%s</code>", fileName)
 
-	// Create a temporary messenger to send the caption
-	poolSize := int64(s.config.Telegram.PoolSize)
-	if poolSize < 1 {
-		poolSize = 8
+	// Build caption with just filename in monospace
+	var captionBuilder strings.Builder
+	captionBuilder.WriteString(fmt.Sprintf("<code>%s</code>", fileName))
+
+	caption := captionBuilder.String()
+
+	s.logger.Info("Generated caption for file", zap.String("caption", caption), zap.String("file", filePath))
+
+	// Create captions map to pass to uploader
+	filesCaptions := map[string]string{
+		filePath: caption,
 	}
 
-	middlewares := tgc.NewMiddleware(
-		&s.config.Telegram,
-		tgc.WithFloodWait(),
-		tgc.WithRecovery(ctx),
-		tgc.WithRetry(s.config.Telegram.MaxRetries),
-		tgc.WithRateLimit(),
-	)
-
-	uploadPool := pool.NewPool(s.tgClient, poolSize, s.logger, middlewares...)
-	defer uploadPool.Close()
-
-	messenger := uploader.NewChannelMessenger(s.tgClient, channelID, s.logger, uploadPool)
-	if _, err := messenger.SendMessage(ctx, caption); err != nil {
-		s.logger.Warn("Failed to send filename caption", zap.Error(err), zap.String("file", fileName))
-	}
-
-	// Use centralized upload mechanism
-	if err := s.uploadFilesToChannel(ctx, []string{filePath}, title, source, isPremium, channelID); err != nil {
+	// Use centralized upload mechanism with caption
+	if err := s.uploadFilesToChannel(ctx, []string{filePath}, title, source, isPremium, channelID, filesCaptions, 0, posterMessageID); err != nil {
 		s.logger.Error("File upload failed", zap.Error(err), zap.String("source", source))
 	}
 
@@ -1123,7 +1281,8 @@ func (s *Server) uploadWebhookFileDirectly(ctx context.Context, filePath string,
 
 // uploadWebhookFileWithRar uploads a large file using archive splitting (RAR or 7z) via centralized upload mechanism
 // metadata: optional ShortenerConfig for archive filename shortening
-func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, title string, source string, isPremium bool, sizeLimit int64, channelID int64, metadata *uploader.ShortenerConfig) {
+// posterMessageID: if > 0, archive parts will be sent as replies to this message
+func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, title string, source string, isPremium bool, sizeLimit int64, channelID int64, metadata *uploader.ShortenerConfig, posterMessageID int) {
 	// Create messenger for archive progress updates
 	poolSize := int64(s.config.Telegram.PoolSize)
 	if poolSize < 1 {
@@ -1182,7 +1341,7 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 	var lastArchiveProgressMsg string
 
 	// Split file with progress callback for Telegram updates
-	archiveParts, err := archiver.SplitFile(filePath, tempArchiveDir, 0, isPremium, func(bytesProcessed, totalBytes int64, percent int) {
+	archiveParts, err := archiver.SplitFile(filePath, tempArchiveDir, 0, isPremium, s.config.Telegram.ArchiveSplitSize, func(bytesProcessed, totalBytes int64, percent int) {
 		// Only log periodically (every 10%) to avoid flooding logs
 		if percent%10 == 0 {
 			s.logger.Debug("Webhook archive split progress", zap.Int64("bytes", bytesProcessed), zap.Int64("total_bytes", totalBytes), zap.Int("percent", percent))
@@ -1240,8 +1399,15 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 
 	s.logger.Info("File split complete for webhook", zap.Int("parts", len(archiveParts)), zap.String("source", source))
 
+	// Create captions for archive parts (filename only)
+	archivePartsCaptions := make(map[string]string)
+	for _, partPath := range archiveParts {
+		partName := filepath.Base(partPath)
+		archivePartsCaptions[partPath] = fmt.Sprintf("<code>%s</code>", partName)
+	}
+
 	// Use centralized upload mechanism for archive parts, passing the existing message ID to reuse it
-	if err := s.uploadFilesToChannel(ctx, archiveParts, title, source, isPremium, channelID, msgID); err != nil {
+	if err := s.uploadFilesToChannel(ctx, archiveParts, title, source, isPremium, channelID, archivePartsCaptions, msgID, posterMessageID); err != nil {
 		s.logger.Error("Failed to upload webhook archive parts", zap.Error(err), zap.String("source", source))
 	}
 
@@ -1254,7 +1420,8 @@ func (s *Server) uploadWebhookFileWithRar(ctx context.Context, filePath string, 
 // It handles pool creation, and actual file uploads using the already-authenticated client
 // channelID: telegram channel to upload to
 // existingMsgID: if provided (>0), will reuse that message for the first upload instead of creating a new one
-func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, title string, source string, isPremium bool, channelID int64, existingMsgID ...int) error {
+// posterMessageID: if provided (>0), files will be sent as replies to this message
+func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, title string, source string, isPremium bool, channelID int64, filesCaptions map[string]string, existingMsgID int, posterMessageID int) error {
 	// Ensure client is ready
 	if s.clientManager == nil || s.tgClient == nil {
 		s.logger.Error("Telegram client not initialized", zap.String("source", source))
@@ -1300,19 +1467,31 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 
 		// Determine message ID: use existing message for first file (if provided), create new for subsequent files
 		var msgID int
-		if i == 0 && len(existingMsgID) > 0 && existingMsgID[0] > 0 {
+		if i == 0 && existingMsgID > 0 {
 			// Reuse the existing message from RAR progress
-			msgID = existingMsgID[0]
+			msgID = existingMsgID
 		} else {
 			// Create a new status message for this file
-			statusMsg := fmt.Sprintf(
-				"📤 <b>Uploading Part %d of %d</b>\n\n"+
-					"<b>Source:</b> %s\n"+
-					"<b>Title:</b> %s\n"+
-					"<b>File:</b> <b><code>%s</code></b>\n\n"+
-					"<b>Starting...</b>",
-				fileNum, totalFiles, strings.ToUpper(source), title, fileName,
-			)
+			var statusMsg string
+			if totalFiles == 1 {
+				statusMsg = fmt.Sprintf(
+					"📤 <b>Uploading</b>\n\n"+
+						"<b>Source:</b> %s\n"+
+						"<b>Title:</b> %s\n"+
+						"<b>File:</b> <b><code>%s</code></b>\n\n"+
+						"<b>Starting...</b>",
+					strings.ToUpper(source), title, fileName,
+				)
+			} else {
+				statusMsg = fmt.Sprintf(
+					"📤 <b>Uploading Part %d of %d</b>\n\n"+
+						"<b>Source:</b> %s\n"+
+						"<b>Title:</b> %s\n"+
+						"<b>File:</b> <b><code>%s</code></b>\n\n"+
+						"<b>Starting...</b>",
+					fileNum, totalFiles, strings.ToUpper(source), title, fileName,
+				)
+			}
 			msgID, _ = messenger.SendMessage(ctx, statusMsg)
 		}
 
@@ -1323,31 +1502,40 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 		lastInfoLogTime := time.Now() // Track Info-level logging (every 5 seconds)
 		var lastProgressMsg string
 
-		// Track bytes and time for current speed calculation (last 3 seconds)
+		// Track speed calculation (every 5 seconds)
 		lastSpeedCheckTime := uploadStartTime
 		lastSpeedCheckBytes := int64(0)
+		var lastCalculatedSpeed string
+
+		// Get caption for this file if provided
+		fileCaption := ""
+		if filesCaptions != nil {
+			fileCaption = filesCaptions[filePath]
+		}
 
 		// Upload the file with throttled progress updates and speed calculation
-		_, err := telegramUploader.UploadToChannel(ctx, filePath, fileName, func(current, total int64, percent int) {
+		_, err := telegramUploader.UploadToChannelWithReply(ctx, filePath, fileName, fileCaption, func(current, total int64, percent int) {
 			elapsed := time.Since(uploadStartTime)
 			now := time.Now()
 
-			// Calculate current speed (last 3 seconds)
-			var currentSpeed string
+			// Calculate speed every 3 seconds only
 			timeSinceLastCheck := now.Sub(lastSpeedCheckTime).Seconds()
 			if timeSinceLastCheck >= 3.0 || percent == 100 {
-				// Update speed calculation
+				// Calculate speed from last checkpoint
 				bytesSinceLastCheck := current - lastSpeedCheckBytes
 				if timeSinceLastCheck > 0 {
-					currentSpeed = formatSpeedDelta(bytesSinceLastCheck, time.Duration(int64(timeSinceLastCheck*1000))*time.Millisecond)
+					lastCalculatedSpeed = formatSpeedDelta(bytesSinceLastCheck, time.Duration(int64(timeSinceLastCheck*1000))*time.Millisecond)
 				} else {
-					currentSpeed = "0.0 MBps"
+					lastCalculatedSpeed = "0.0 MB/s"
 				}
 				lastSpeedCheckTime = now
 				lastSpeedCheckBytes = current
-			} else {
-				// Not enough time passed, use overall average for now
-				currentSpeed = formatSpeed(current, elapsed)
+			}
+
+			// Always use the last calculated speed (or "Calculating..." if not ready yet)
+			currentSpeed := lastCalculatedSpeed
+			if currentSpeed == "" {
+				currentSpeed = "Calculating..."
 			}
 
 			// Log at Info level only every 5 seconds (not on every callback)
@@ -1369,7 +1557,7 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 
 				messenger.UpdateMessage(ctx, msgID, progressMsg)
 			}
-		})
+		}, posterMessageID)
 
 		if err != nil {
 			s.logger.Error("Failed to upload file", zap.Error(err), zap.String("file", fileName), zap.String("source", source))
@@ -1389,4 +1577,172 @@ func (s *Server) uploadFilesToChannel(ctx context.Context, filePaths []string, t
 	}
 
 	return nil
+}
+
+// RadarrMovieMetadata represents the minimal metadata we need from Radarr's public API
+type RadarrMovieMetadata struct {
+	Title    string   `json:"Title"`
+	Year     int      `json:"Year"`
+	Overview string   `json:"Overview"`
+	ImdbID   string   `json:"ImdbId"`
+	TmdbID   int      `json:"TmdbId"`
+	Runtime  int      `json:"Runtime"`
+	Genres   []string `json:"Genres"`
+	Images   []struct {
+		CoverType string `json:"CoverType"`
+		URL       string `json:"Url"`
+	} `json:"Images"`
+	MovieRatings struct {
+		Imdb struct {
+			Value float64 `json:"Value"`
+			Count int     `json:"Count"`
+		} `json:"Imdb"`
+	} `json:"MovieRatings"`
+}
+
+// SonarrSeriesMetadata represents the minimal metadata we need from Sonarr's Skyhook API
+type SonarrSeriesMetadata struct {
+	Title   string   `json:"title"`
+	Year    int      `json:"year"`
+	ImdbID  string   `json:"imdbId"`
+	TvdbID  int      `json:"tvdbId"`
+	Runtime int      `json:"runtime"`
+	Genres  []string `json:"genres"`
+	Images  []struct {
+		CoverType string `json:"coverType"`
+		URL       string `json:"url"`
+	} `json:"images"`
+	Rating struct {
+		Value float64 `json:"value"`
+	} `json:"rating"`
+}
+
+// fetchRadarrMetadata fetches movie metadata from Radarr's public API
+func (s *Server) fetchRadarrMetadata(ctx context.Context, tmdbID int) (*RadarrMovieMetadata, error) {
+	if tmdbID == 0 {
+		s.logger.Warn("Radarr metadata fetch: invalid TMDB ID provided")
+		return nil, fmt.Errorf("invalid TMDB ID")
+	}
+
+	url := fmt.Sprintf("https://api.radarr.video/v1/movie/%d", tmdbID)
+	s.logger.Info("Radarr metadata fetch: calling api.radarr.video API", zap.String("url", url), zap.Int("tmdb_id", tmdbID))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		s.logger.Error("Radarr metadata fetch: failed to create API request", zap.Error(err), zap.String("url", url))
+		return nil, err
+	}
+
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.logger.Error("Radarr metadata fetch: failed to fetch metadata from api.radarr.video", zap.Error(err), zap.String("url", url))
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Warn("Radarr metadata fetch: unexpected status from api.radarr.video", zap.Int("status_code", resp.StatusCode), zap.String("url", url))
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	s.logger.Info("Radarr metadata fetch: api.radarr.video responded with 200 OK, parsing response")
+
+	var metadata RadarrMovieMetadata
+	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+		s.logger.Error("Radarr metadata fetch: failed to decode api.radarr.video response", zap.Error(err))
+		return nil, err
+	}
+
+	s.logger.Info("Radarr metadata fetch: successfully decoded metadata", zap.Int("images_count", len(metadata.Images)), zap.String("title", metadata.Title), zap.Int("runtime", metadata.Runtime), zap.Strings("genres", metadata.Genres))
+	return &metadata, nil
+}
+
+// fetchRadarrPosterURL fetches the poster image URL from Radarr's public API (deprecated - use fetchRadarrMetadata instead)
+func (s *Server) fetchRadarrPosterURL(ctx context.Context, tmdbID int) (string, error) {
+	metadata, err := s.fetchRadarrMetadata(ctx, tmdbID)
+	if err != nil {
+		return "", err
+	}
+
+	if metadata == nil {
+		return "", fmt.Errorf("metadata is nil")
+	}
+
+	// Extract poster URL from Images array
+	for i, img := range metadata.Images {
+		s.logger.Debug("Radarr poster fetch: examining image", zap.Int("index", i), zap.String("cover_type", img.CoverType), zap.String("url", img.URL))
+		if img.CoverType == "Poster" {
+			s.logger.Info("Radarr poster fetch: FOUND poster image", zap.String("poster_url", img.URL))
+			return img.URL, nil
+		}
+	}
+
+	s.logger.Warn("Radarr poster fetch: no poster image found in api.radarr.video response")
+	return "", fmt.Errorf("no poster image found")
+}
+
+// fetchSonarrMetadata fetches series metadata from Sonarr's Skyhook API
+func (s *Server) fetchSonarrMetadata(ctx context.Context, tvdbID int) (*SonarrSeriesMetadata, error) {
+	if tvdbID == 0 {
+		s.logger.Warn("Sonarr metadata fetch: invalid TVDB ID provided")
+		return nil, fmt.Errorf("invalid TVDB ID")
+	}
+
+	url := fmt.Sprintf("https://skyhook.sonarr.tv/v1/tvdb/shows/en/%d", tvdbID)
+	s.logger.Info("Sonarr metadata fetch: calling skyhook.sonarr.tv API", zap.String("url", url), zap.Int("tvdb_id", tvdbID))
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		s.logger.Error("Sonarr metadata fetch: failed to create API request", zap.Error(err), zap.String("url", url))
+		return nil, err
+	}
+
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		s.logger.Error("Sonarr metadata fetch: failed to fetch metadata from skyhook.sonarr.tv", zap.Error(err), zap.String("url", url))
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		s.logger.Warn("Sonarr metadata fetch: unexpected status from skyhook.sonarr.tv", zap.Int("status_code", resp.StatusCode), zap.String("url", url))
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	s.logger.Info("Sonarr metadata fetch: skyhook.sonarr.tv responded with 200 OK, parsing response")
+
+	var metadata SonarrSeriesMetadata
+	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+		s.logger.Error("Sonarr metadata fetch: failed to decode skyhook.sonarr.tv response", zap.Error(err))
+		return nil, err
+	}
+
+	s.logger.Info("Sonarr metadata fetch: successfully decoded metadata", zap.Int("images_count", len(metadata.Images)), zap.String("title", metadata.Title), zap.Int("runtime", metadata.Runtime), zap.Strings("genres", metadata.Genres))
+	return &metadata, nil
+}
+
+// fetchSonarrPosterURL fetches the poster image URL from Sonarr's Skyhook API (deprecated - use fetchSonarrMetadata instead)
+func (s *Server) fetchSonarrPosterURL(ctx context.Context, tvdbID int) (string, error) {
+	metadata, err := s.fetchSonarrMetadata(ctx, tvdbID)
+	if err != nil {
+		return "", err
+	}
+
+	if metadata == nil {
+		return "", fmt.Errorf("metadata is nil")
+	}
+
+	// Extract poster URL from Images array
+	for i, img := range metadata.Images {
+		s.logger.Debug("Sonarr poster fetch: examining image", zap.Int("index", i), zap.String("cover_type", img.CoverType), zap.String("url", img.URL))
+		if img.CoverType == "Poster" {
+			s.logger.Info("Sonarr poster fetch: FOUND poster image", zap.String("poster_url", img.URL))
+			return img.URL, nil
+		}
+	}
+
+	s.logger.Warn("Sonarr poster fetch: no poster image found in skyhook.sonarr.tv response")
+	return "", fmt.Errorf("no poster image found")
 }

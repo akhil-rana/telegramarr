@@ -98,6 +98,62 @@ func (cm *ChannelMessenger) SendMessage(ctx context.Context, text string) (int, 
 	return msgID, nil
 }
 
+// SendMessageWithReply sends a text message to the channel as a reply to another message
+func (cm *ChannelMessenger) SendMessageWithReply(ctx context.Context, text string, replyToMsgID int) (int, error) {
+	if cm.client == nil {
+		cm.logger.Error("Client is nil, cannot send message")
+		return 0, fmt.Errorf("client is nil")
+	}
+
+	// Strip HTML tags and get entities
+	cleanedText, entities := stripHTMLAndParseEntities(text)
+
+	// Fetch AccessHash if not already done
+	var err error
+	cm.accessMutex.Do(func() {
+		cm.accessHash, err = cm.fetchChannelAccessHash(ctx)
+	})
+	if err != nil {
+		cm.logger.Error("Failed to fetch channel access hash", zap.Error(err))
+		return 0, fmt.Errorf("failed to fetch channel access hash: %w", err)
+	}
+
+	cm.logger.Debug("Using channel peer", zap.Int64("channel_id", cm.channelID), zap.Int64("access_hash", cm.accessHash))
+
+	inputPeer := &tg.InputPeerChannel{
+		ChannelID:  cm.channelID,
+		AccessHash: cm.accessHash,
+	}
+
+	// Get API client from pool if available
+	apiClient := cm.getAPIClient(ctx)
+
+	// Create reply structure using InputReplyToMessage
+	replyTo := &tg.InputReplyToMessage{
+		ReplyToMsgID: replyToMsgID,
+	}
+
+	result, err := apiClient.MessagesSendMessage(ctx, &tg.MessagesSendMessageRequest{
+		Peer:      inputPeer,
+		Message:   cleanedText,
+		RandomID:  generateRandomID(),
+		NoWebpage: true,
+		Entities:  entities,
+		ReplyTo:   replyTo,
+	})
+
+	if err != nil {
+		cm.logger.Error("Failed to send message", zap.Error(err), zap.String("text", cleanedText[:min(len(cleanedText), 50)]))
+		return 0, fmt.Errorf("failed to send message: %w", err)
+	}
+
+	// Extract message ID from result
+	msgID := extractMessageID(result)
+	cm.logger.Debug("Message sent to channel as reply", zap.Int("msg_id", msgID), zap.Int("reply_to_msg_id", replyToMsgID))
+
+	return msgID, nil
+}
+
 // UpdateMessage edits an existing message with HTML formatting support
 func (cm *ChannelMessenger) UpdateMessage(ctx context.Context, msgID int, text string) error {
 	// If msgID is 0, we can't edit - just log and return error
@@ -264,6 +320,81 @@ func (cm *ChannelMessenger) SendPhotoFromBytes(ctx context.Context, photoBytes [
 	return msgID, nil
 }
 
+// SendPhotoWithReply sends a photo from byte data as a reply to another message
+func (cm *ChannelMessenger) SendPhotoWithReply(ctx context.Context, photoBytes []byte, caption string, replyToMsgID int) (int, error) {
+	if cm.client == nil {
+		cm.logger.Error("Client is nil, cannot send photo")
+		return 0, fmt.Errorf("client is nil")
+	}
+
+	if len(photoBytes) == 0 {
+		cm.logger.Error("Photo bytes are empty")
+		return 0, fmt.Errorf("photo bytes are empty")
+	}
+
+	// Strip HTML tags and get entities for caption
+	cleanedCaption, entities := stripHTMLAndParseEntities(caption)
+
+	// Fetch AccessHash if not already done
+	var err error
+	cm.accessMutex.Do(func() {
+		cm.accessHash, err = cm.fetchChannelAccessHash(ctx)
+	})
+	if err != nil {
+		cm.logger.Error("Failed to fetch channel access hash", zap.Error(err))
+		return 0, fmt.Errorf("failed to fetch channel access hash: %w", err)
+	}
+
+	inputPeer := &tg.InputPeerChannel{
+		ChannelID:  cm.channelID,
+		AccessHash: cm.accessHash,
+	}
+
+	// Get API client from pool if available
+	apiClient := cm.getAPIClient(ctx)
+
+	// Create an uploader for the photo
+	up := uploader.NewUploader(apiClient)
+
+	// Upload the photo
+	photo, err := up.FromBytes(ctx, "photo.jpg", photoBytes)
+	if err != nil {
+		cm.logger.Error("Failed to upload photo", zap.Error(err))
+		return 0, fmt.Errorf("failed to upload photo: %w", err)
+	}
+
+	// Create input media with the uploaded file
+	inputMedia := &tg.InputMediaUploadedPhoto{
+		File: photo,
+	}
+
+	// Create reply structure
+	replyTo := &tg.InputReplyToMessage{
+		ReplyToMsgID: replyToMsgID,
+	}
+
+	// Send the message with photo as a reply
+	result, err := apiClient.MessagesSendMedia(ctx, &tg.MessagesSendMediaRequest{
+		Peer:     inputPeer,
+		Media:    inputMedia,
+		Message:  cleanedCaption,
+		RandomID: generateRandomID(),
+		Entities: entities,
+		ReplyTo:  replyTo,
+	})
+
+	if err != nil {
+		cm.logger.Error("Failed to send photo message", zap.Error(err))
+		return 0, fmt.Errorf("failed to send photo message: %w", err)
+	}
+
+	// Extract message ID from result
+	msgID := extractMessageID(result)
+	cm.logger.Info("Photo sent to channel as reply", zap.Int("msg_id", msgID), zap.Int("reply_to_msg_id", replyToMsgID))
+
+	return msgID, nil
+}
+
 // getAPIClient returns an API client from the pool if available, otherwise from the base client
 func (cm *ChannelMessenger) getAPIClient(ctx context.Context) *tg.Client {
 	if cm.pool != nil {
@@ -365,7 +496,7 @@ func min(a, b int) int {
 }
 
 // stripHTMLAndParseEntities strips HTML tags from text and returns both cleaned text and entities
-// Supports: <b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strike</s>, <code>code</code>
+// Supports: <b>bold</b>, <i>italic</i>, <u>underline</u>, <s>strike</s>, <code>code</code>, <blockquote>quote</blockquote>
 // Important: Uses UTF-16 offsets as required by Telegram API
 func stripHTMLAndParseEntities(text string) (string, []tg.MessageEntityClass) {
 	var entities []tg.MessageEntityClass
@@ -452,6 +583,11 @@ func stripHTMLAndParseEntities(text string) (string, []tg.MessageEntityClass) {
 								Offset: startOffset,
 								Length: length,
 								URL:    stack[j].url,
+							}
+						case "blockquote":
+							entity = &tg.MessageEntityBlockquote{
+								Offset: startOffset,
+								Length: length,
 							}
 						}
 

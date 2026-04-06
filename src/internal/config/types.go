@@ -4,6 +4,8 @@ type Config struct {
 	Telegram TelegramConfig `mapstructure:"telegram" validate:"required"`
 	Paths    PathsConfig    `mapstructure:"paths"`
 	TMDB     TMDBConfig     `mapstructure:"tmdb"`
+	Radarr   RadarrConfig   `mapstructure:"radarr"`
+	Sonarr   SonarrConfig   `mapstructure:"sonarr"`
 	Server   ServerConfig   `mapstructure:"server"`
 	Logging  LoggingConfig  `mapstructure:"logging"`
 }
@@ -39,6 +41,17 @@ type TelegramConfig struct {
 
 	// Archive format for splitting large files (rar or 7z)
 	SplitArchiveFormat string `mapstructure:"split_archive_format" default:"rar"`
+
+	// Send movie details with poster message for Radarr uploads (enabled by default)
+	SendMovieDetailsMessage bool `mapstructure:"send_movie_details_message" default:"true"`
+
+	// Send series details with poster message for Sonarr uploads (disabled by default)
+	SendSeriesDetailsMessage bool `mapstructure:"send_series_details_message" default:"false"`
+
+	// Archive split size in GB (for splitting large files with RAR/7z)
+	// If 0, uses maximum according to account type (4GB for premium, 2GB for free)
+	// If > 0, uses this value (max allowed: 4GB, supports decimals like 1.5)
+	ArchiveSplitSize float64 `mapstructure:"archive_split_size" default:"0"`
 }
 
 type TMDBConfig struct {
@@ -69,4 +82,18 @@ type PathsConfig struct {
 	RadarrMoviesPath string `mapstructure:"radarr_movies" default:"./movies/"`
 	// Path where Sonarr stores TV shows (with trailing slash)
 	SonarrTVShowsPath string `mapstructure:"sonarr_tvshows" default:"./tvshows/"`
+}
+
+type RadarrConfig struct {
+	// Radarr instance URL (e.g., "http://localhost:7878")
+	URL string `mapstructure:"url" default:"http://localhost:7878"`
+	// Radarr API key (optional for public API endpoints)
+	APIKey string `mapstructure:"api_key"`
+}
+
+type SonarrConfig struct {
+	// Sonarr instance URL (e.g., "http://localhost:8989")
+	URL string `mapstructure:"url" default:"http://localhost:8989"`
+	// Sonarr API key (optional for public API endpoints)
+	APIKey string `mapstructure:"api_key"`
 }

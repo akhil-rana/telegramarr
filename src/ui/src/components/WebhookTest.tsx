@@ -4,61 +4,66 @@ import './WebhookTest.css'
 // Sample Radarr webhook payload with actual test movie file
 const AKIRA_RADARR_PAYLOAD = {
   movie: {
-    id: 1,
-    title: 'Akira',
-    year: 1988,
-    releaseDate: '1988-07-16',
-    folderPath: 'test/movies',
-    tmdbId: 149,
-    imdbId: 'tt0094625',
-    overview: 'A secret military project endangers Neo-Tokyo when it turns a biker gang member into a rampaging psychic psychopath who can only be stopped by his friends and a teenager with psychic powers.',
+    id: 1063,
+    title: 'Crime 101',
+    year: 2026,
+    releaseDate: '2026-05-12',
+    folderPath: '/movies/Crime 101 (2026)',
+    tmdbId: 1171145,
+    imdbId: 'tt32430579',
+    overview: 'When an elusive thief whose high-stakes heists unfold along the iconic 101 freeway in Los Angeles eyes the score of a lifetime, with hopes of this being his final job, his path collides with a disillusioned insurance broker who is facing her own crossroads. Determined to crack the case, a relentless detective closes in on the operation, raising the stakes even higher.',
   },
   remoteMovie: {
-    tmdbId: 149,
-    imdbId: 'tt0094625',
-    title: 'Akira',
-    year: 1988,
+    tmdbId: 1171145,
+    imdbId: 'tt32430579',
+    title: 'Crime 101',
+    year: 2026,
   },
   movieFile: {
-    id: 1,
-    relativePath: 'Akira (1988) [2160p] [4K] [BluRay] [5.1] [YTS.MX] [imdbid-tt0094625].mkv',
-    path: 'test/movies/Akira (1988) [2160p] [4K] [BluRay] [5.1] [YTS.MX] [imdbid-tt0094625].mkv',
-    quality: '4K',
+    id: 1654,
+    relativePath: 'Crime 101 2026 1080p WEB Line HEVC x265 BONE.mkv',
+    path: '/movies/Crime 101 (2026)/Crime 101 2026 1080p WEB Line HEVC x265 BONE.mkv',
+    quality: 'WEB-1080p',
     qualityVersion: 1,
-    releaseGroup: 'YTS.MX',
-    sceneName: 'Akira.1988.2160p.4K.BluRay.x265-YTS.MX',
-    indexerFlags: '',
-    size: 2147483648, // 2GB
-    dateAdded: '2024-04-03T00:00:00Z',
+    releaseGroup: 'BONE',
+    sceneName: 'Crime 101 2026 1080p WEB Line HEVC x265 BONE',
+    indexerFlags: 'G_Freeleech',
+    size: 2147483648,
+    dateAdded: '2026-04-06T14:19:12.6819039Z',
     mediaInfo: {
-      audioChannels: 5.1,
+      audioChannels: 2,
       audioCodec: 'AAC',
-      audioLanguages: ['en'],
-      height: 2160,
-      width: 3840,
-      subtitles: ['en', 'ja'],
+      audioLanguages: ['und'],
+      height: 1080,
+      width: 1920,
+      subtitles: [],
       videoCodec: 'h265',
-      videoDynamicRange: 'HDR',
+      videoDynamicRange: '',
       videoDynamicRangeType: '',
     },
   },
   isUpgrade: false,
-  downloadClient: 'qBittorrent',
-  downloadClientType: 'QBittorrent',
-  downloadId: 'test-download-id',
-  deletedFiles: [],
+  downloadClient: 'qbittorrent',
+  downloadClientType: 'qBittorrent',
+  downloadId: 'B40201C79C23A7C27A568D5B3BD2E260E4A92951',
+  deletedFiles: null,
   customFormatInfo: {
-    customFormats: [],
-    customFormatScore: 0,
+    customFormats: [
+      {
+        id: 4,
+        name: 'x264',
+      },
+    ],
+    customFormatScore: -1,
   },
   release: {
-    releaseTitle: 'Akira.1988.2160p.4K.BluRay.x265-YTS.MX',
-    indexer: 'YTS.MX',
-    size: 2147483648,
+    releaseTitle: 'Crime 101 (2026) [720p] [WEBRip]',
+    indexer: 'LimeTorrents (Prowlarr)',
+    size: 1374389504,
   },
   eventType: 'Download',
   instanceName: 'Radarr',
-  applicationUrl: 'http://localhost:7878',
+  applicationUrl: 'https://radarr.akhilrana.com',
 }
 
 // Sample Sonarr webhook payload (for reference)
@@ -242,7 +247,7 @@ export const WebhookTest: React.FC<WebhookTestProps> = ({ apiBaseUrl }) => {
       )}
 
       <div className="payload-details">
-        <h3>Akira Test Payload Details</h3>
+        <h3>Crime 101 Test Payload Details</h3>
         <ul>
           <li><strong>Title:</strong> {AKIRA_RADARR_PAYLOAD.movie.title}</li>
           <li><strong>Year:</strong> {AKIRA_RADARR_PAYLOAD.movie.year}</li>

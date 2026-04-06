@@ -8,13 +8,13 @@ telegram:
   
   device_model: "Desktop"
   system_version: "Windows 11"
-  app_version: "6.7.0"
+  app_version: "6.7.1"
   lang_pack: "tdesktop"
   system_lang_code: "en-US"
   lang_code: "en"
   
   # Rate limiting configuration (matching teldrive architecture)
-  rate_limit: false          # Set to true to enable global rate limiting (default: false for max speed)
+  rate_limit: true          # Set to true to enable global rate limiting (default: false for max speed)
   rate: 100                  # Rate limit interval in milliseconds (default: 100ms)
   rate_burst: 5              # Burst capacity for rate limiting (default: 5 requests)
   max_retries: 5             # Maximum retry attempts on Telegram errors (default: 5)
@@ -25,29 +25,25 @@ telegram:
   pool_size: 8               # Connection pool size for concurrent uploads (default: 8, range: 1-32)
   
   # Message refresh interval for upload progress updates (in seconds)
-  message_refresh_interval: 2        # How often to update upload progress message (default: 2 seconds)
+  message_refresh_interval: 5        # How often to update upload progress message (default: 5 seconds)
   
   # Delay before processing webhook (in seconds) - allows filesystem to catch up for rclone mounts
   delay_time: 30             # Default: 30 seconds
   
   # Archive format for splitting large files (rar or 7z)
   split_archive_format: "rar"        # Format to use when splitting large files: "rar" or "7z" (default: "rar")
+  
+  # Archive split size in GB for splitting large files (0 = use maximum according to account type)
+  archive_split_size: 0              # Split size: 0 = 4GB for premium/2GB for free, or set custom value (e.g., 1.5, 3, 4, max: 4GB)
+  
+  # Send movie/series details message with poster image before file upload
+  send_movie_details_message: true   # Send movie poster and details for Radarr uploads (default: true)
+  send_series_details_message: false # Send series poster and details for Sonarr uploads (default: false)
 
 # File paths for Radarr and Sonarr
 paths:
   radarr_movies: "./movies/"         # Path where Radarr stores movies (with trailing slash)
   sonarr_tvshows: "./tvshows/"       # Path where Sonarr stores TV shows (with trailing slash)
-
-# TMDB API Configuration (Optional)
-# Get your API key from: https://www.themoviedb.org/settings/api
-# Set enabled to true to fetch movie posters and details for Radarr webhooks
-tmdb:
-  enabled: false                                              # Set to true to enable TMDB features (default: false)
-  api_key: "your_tmdb_api_key_here"                          # TMDB API key (required if enabled is true)
-  # Image configuration (optional, defaults provided)
-  image_base_url: "https://image.tmdb.org/t/p/"              # Base URL for TMDB poster/backdrop images
-  poster_size: "w342"                                         # Poster width: w92, w154, w185, w342, w500, w780, original (default: w342)
-  backdrop_size: "w780"                                       # Backdrop width: w300, w780, w1280, original (default: w780)
 
 server:
   port: 8080

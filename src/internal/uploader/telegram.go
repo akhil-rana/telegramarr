@@ -45,7 +45,14 @@ func NewTelegramUploader(client *telegram.Client, channelID int64, logger *zap.L
 
 // UploadToChannel uploads a file to a Telegram channel
 // Uses gotd/td's uploader with multiple threads for fast upload
-func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string, fileName string, progressCallback func(current, total int64, percent int)) (int64, error) {
+// caption is optional - if provided, it will be shown as the file's caption in Telegram
+func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string, fileName string, caption string, progressCallback func(current, total int64, percent int)) (int64, error) {
+	return tu.UploadToChannelWithReply(ctx, filePath, fileName, caption, progressCallback, 0)
+}
+
+// UploadToChannelWithReply uploads a file to a Telegram channel as a reply to another message
+// replyToMsgID: if > 0, the file will be sent as a reply to this message
+func (tu *TelegramUploader) UploadToChannelWithReply(ctx context.Context, filePath string, fileName string, caption string, progressCallback func(current, total int64, percent int), replyToMsgID int) (int64, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		tu.logger.Error("Failed to open file", zap.Error(err), zap.String("path", filePath))
@@ -85,9 +92,9 @@ func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string
 					// Calculate speed
 					elapsed := time.Since(lastProgressTime)
 					if elapsed > 0 {
-						// Speed in MB/s
+						// Speed in MB/s using binary units (1024*1024) for actual transfer speed
 						bytesSinceLast := current - lastProgress
-						speedMBps := float64(bytesSinceLast) / elapsed.Seconds() / 1024 / 1024
+						speedMBs := float64(bytesSinceLast) / elapsed.Seconds() / 1024 / 1024
 
 						// Estimate remaining time
 						remainingBytes := fileSize - current
@@ -99,7 +106,7 @@ func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string
 									zap.Int64("current", current),
 									zap.Int64("total", fileSize),
 									zap.Int("percent", percent),
-									zap.Float64("speed_mbps", speedMBps),
+									zap.Float64("speed_mbs", speedMBs),
 									zap.Duration("eta", remainingSeconds))
 							}
 						}
@@ -186,7 +193,31 @@ func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string
 		Filename(fileName).
 		ForceFile(true)
 
-	// Send the document using message builder (like teldrive)
+	// Create input media for direct API call with caption support
+	inputMedia := &tg.InputMediaUploadedDocument{
+		File:     uploadedFile,
+		MimeType: "application/octet-stream", // Default mime type for files
+		Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeFilename{
+				FileName: fileName,
+			},
+		},
+	}
+
+	// Parse caption for entities if caption is provided
+	var cleanedCaption string
+	var entities []tg.MessageEntityClass
+	if caption != "" {
+		cleanedCaption, entities = stripHTMLAndParseEntities(caption)
+		tu.logger.Info("Caption will be sent with file",
+			zap.String("file", fileName),
+			zap.String("caption_preview", cleanedCaption[:min(len(cleanedCaption), 100)]),
+			zap.Int("entities_count", len(entities)))
+	} else {
+		tu.logger.Info("No caption provided for file", zap.String("file", fileName))
+	}
+
+	// Send the document - use API directly if caption is provided, otherwise use message builder
 	// Retry logic for transient failures (rate limiting, temporary issues)
 	// These often succeed on retry even after gotd's internal retries are exhausted
 	var msgResult tg.UpdatesClass
@@ -195,13 +226,51 @@ func (tu *TelegramUploader) UploadToChannel(ctx context.Context, filePath string
 	baseDelay := 1 * time.Second
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		sender := message.NewSender(apiClient)
-		target := sender.To(&tg.InputPeerChannel{
-			ChannelID:  tu.messenger.channelID,
-			AccessHash: freshAccessHash,
-		})
+		if caption != "" {
+			// Use direct API call with MessagesSendMedia to support caption
+			tu.logger.Info("SENDING DOCUMENT WITH CAPTION TO TELEGRAM",
+				zap.String("file", fileName),
+				zap.Int64("channel_id", tu.messenger.channelID),
+				zap.String("caption_preview", cleanedCaption[:min(len(cleanedCaption), 150)]),
+				zap.Int("attempt", attempt+1),
+				zap.Int("max_attempts", maxRetries))
 
-		msgResult, lastErr = target.Media(ctx, document)
+			sendMediaRequest := &tg.MessagesSendMediaRequest{
+				Peer:     &tg.InputPeerChannel{ChannelID: tu.messenger.channelID, AccessHash: freshAccessHash},
+				Media:    inputMedia,
+				Message:  cleanedCaption,
+				RandomID: generateRandomID(),
+				Entities: entities,
+			}
+
+			// Add reply if replyToMsgID is provided
+			if replyToMsgID > 0 {
+				sendMediaRequest.ReplyTo = &tg.InputReplyToMessage{
+					ReplyToMsgID: replyToMsgID,
+				}
+				tu.logger.Info("File will be sent as reply", zap.Int("reply_to_msg_id", replyToMsgID), zap.String("file", fileName))
+			}
+
+			result, err := apiClient.MessagesSendMedia(ctx, sendMediaRequest)
+			msgResult = result
+			lastErr = err
+
+			if err == nil {
+				tu.logger.Info("✅ DOCUMENT WITH CAPTION SENT SUCCESSFULLY",
+					zap.String("file", fileName),
+					zap.Int64("channel_id", tu.messenger.channelID),
+					zap.String("status", "Caption should now be visible in Telegram"))
+			}
+		} else {
+			// Use message builder when no caption (original behavior)
+			sender := message.NewSender(apiClient)
+			target := sender.To(&tg.InputPeerChannel{
+				ChannelID:  tu.messenger.channelID,
+				AccessHash: freshAccessHash,
+			})
+			msgResult, lastErr = target.Media(ctx, document)
+		}
+
 		if lastErr == nil {
 			break // Success, exit retry loop
 		}

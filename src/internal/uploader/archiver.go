@@ -9,10 +9,11 @@ type Archiver interface {
 	// outputDir: directory to write archive parts
 	// partSize: max size per part (0 = auto)
 	// isPremium: determines max file size (2GB for free, 4GB for premium)
+	// splitSizeGB: custom split size in GB (0 = use max according to isPremium)
 	// progressCallback: called with (bytesProcessed, totalBytes, percentage)
 	// archiveNameConfig: optional configuration for shortened archive filename (nil = use original)
 	// Returns: list of created archive part file paths
-	SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, progressCallback func(bytesProcessed, totalBytes int64, percent int), archiveNameConfig *ShortenerConfig) ([]string, error)
+	SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, splitSizeGB float64, progressCallback func(bytesProcessed, totalBytes int64, percent int), archiveNameConfig *ShortenerConfig) ([]string, error)
 
 	// CleanupFiles removes the specified archive part files
 	CleanupFiles(filePaths []string)

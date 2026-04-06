@@ -1,63 +1,63 @@
-# Minimal runtime-only Dockerfile
-# Expects pre-built artifacts from build.sh in build/prod/
+# Telegramarr Production Image
+# Multi-architecture support (amd64, arm64)
+# 
+# IMPORTANT: This Dockerfile assumes pre-built artifacts in build/prod/
+# NO COMPILATION happens when building this image!
+# 
+# Use ./build-prod.sh to compile frontend and backend first
+# Then: docker build -t telegramarr:0.7.0-beta .
 
 FROM alpine:latest
 
 WORKDIR /app
 
-# Install runtime dependencies
-# - libc6-compat: C library compatibility for RAR binaries (they're dynamically linked)
-# - libstdc++: C++ standard library for various tools
-# - p7zip: For 7z compression tool
+# Install runtime dependencies ONLY (minimal set)
 # - ca-certificates: For HTTPS/TLS support
-# - tzdata: For timezone support
-# - tini: For proper process signal handling
-# - curl: For downloading RAR tools
-# - tar: For extracting RAR archive
+# - tzdata: For timezone support  
+# - tini: For proper signal handling
+# - p7zip: For 7z compression tool (always needed)
 RUN apk add --no-cache \
-    libc6-compat \
-    libstdc++ \
-    p7zip \
     ca-certificates \
     tzdata \
     tini \
-    curl \
-    tar
+    p7zip
 
-# Install RAR (rar and unrar binaries) from official source
-# Note: Archive contains rar/ folder with binaries inside
-# Download RAR tools, extract rar folder, copy binaries, and clean up
-RUN curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
+# Install RAR only on x86_64 (not on ARM64)
+# ARM64 uses 7z format by default
+RUN if [ "$(apk --print-arch)" != "aarch64" ]; then \
+    apk add --no-cache curl tar && \
+    echo "Installing RAR for $(apk --print-arch)..." && \
+    curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
     tar xf /tmp/rarlinux.tar.gz -C /tmp && \
     install -v -m755 /tmp/rar/unrar /usr/local/bin && \
     install -v -m755 /tmp/rar/rar /usr/local/bin && \
     rm -rf /tmp/rarlinux.tar.gz /tmp/rar && \
     which unrar && which rar && \
-    unrar 2>&1 | head -3 && \
-    rar 2>&1 | head -3
+    apk del --no-cache curl tar; \
+    else \
+    echo "Skipping RAR installation on ARM64 (uses 7z)"; \
+    fi
 
 # Create non-root user for security
 RUN addgroup -g 1000 -S telegramarr && \
     adduser -u 1000 -S telegramarr -G telegramarr
 
-# Copy pre-built Go binary from build/prod/
+# Copy PRE-BUILT Go binary (no compilation!)
 COPY build/prod/telegramarr /app/
 
-# Copy pre-built frontend artifacts from build/prod/dist/
+# Copy PRE-BUILT frontend artifacts (no compilation!)
 COPY build/prod/dist /app/src/ui/dist
 
 # Create necessary directories with correct permissions
 RUN mkdir -p /app/data /app/temp && \
     chown -R telegramarr:telegramarr /app && \
-    chmod 755 /app/data /app/temp /app/telegramarr
-
-# Make binary executable
-RUN chmod +x /app/telegramarr
+    chmod 755 /app/data /app/temp /app/telegramarr && \
+    chmod +x /app/telegramarr
 
 # Switch to non-root user
 USER telegramarr
 
-# Expose port for the application (single port serves both frontend and API)
+# Expose single port for both frontend and API
 EXPOSE 8080
 
 # Health check
@@ -67,53 +67,26 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Use tini as entrypoint to handle signals properly
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Default command - runs the application
-# Go binary serves:
-#   - Frontend (index.html, CSS, JS) on /
-#   - API endpoints on /api/*
+# Default command
 CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 
 # ============================================
-# Volume mounts (for docker run/compose):
+# Build Instructions (NO COMPILATION IN DOCKER)
 # ============================================
-# -v /path/to/config.yaml:/app/config.yaml         # Configuration file (required, mounted read-only recommended)
-# -v /path/to/data:/app/data                       # Persistent data (session.json, session.db)
-# -v /path/to/movies:/movies                       # Radarr movie library path
-# -v /path/to/tvshows:/tvshows                     # Sonarr TV shows library path
-# -v /path/to/temp:/app/temp                       # Temporary directory for RAR splits (optional)
 #
-# Example docker-compose.yaml:
-# services:
-#   telegramarr:
-#     image: telegramarr:latest
-#     container_name: telegramarr
-#     ports:
-#       - "8080:8080"
-#     volumes:
-#       - ./config.yaml:/app/config.yaml:ro         # Read-only config
-#       - ./data:/app/data                          # Persistent storage
-#       - /mnt/media/movies:/movies                 # Radarr movies
-#       - /mnt/media/tvshows:/tvshows               # Sonarr TV shows
-#       - ./temp:/app/temp                          # Temp directory
-#     environment:
-#       - TZ=UTC
-#     restart: unless-stopped
-#     healthcheck:
-#       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/"]
-#       interval: 30s
-#       timeout: 10s
-#       retries: 3
+# 1. Pre-compile everything locally:
+#    ./build-prod.sh
 #
-# ============================================
-# Build and run instructions:
-# ============================================
-# 1. Build production artifacts locally:
-#    ./build.sh
+# 2. Build Docker image (no compilation happens here!):
+#    docker build -t telegramarr:0.7.0-beta .
 #
-# 2. Build Docker image:
-#    docker build -t telegramarr:latest .
+# 3. Push to Docker Hub (both architectures):
+#    docker buildx build --platform linux/amd64,linux/arm64 \
+#      -t yourusername/telegramarr:0.7.0-beta \
+#      -t yourusername/telegramarr:latest \
+#      --push .
 #
-# 3. Run container (single port 8080):
+# 4. Run container:
 #    docker run -d \
 #      --name telegramarr \
 #      -p 8080:8080 \
@@ -122,21 +95,30 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 #      -v /mnt/movies:/movies \
 #      -v /mnt/tvshows:/tvshows \
 #      -e TZ=UTC \
-#      telegramarr:latest
-#
-# 4. Access:
-#    - Frontend: http://localhost:8080
-#    - API: http://localhost:8080/api/*
-#    - Webhooks: http://localhost:8080/api/webhooks/radarr
+#      telegramarr:0.7.0-beta
 #
 # ============================================
-# Tools available in container:
+# Image Details
 # ============================================
-# - unrar: Extract RAR files
-# - rar: Create/modify RAR files
-# - 7z: Create/extract 7z archives
-# - Go binary: Compiled application binary (no Go toolchain)
+# Base: Alpine Linux (~7MB)
+# Single port: 8080 (frontend + API)
+# 
+# What's included:
+#   ✓ Pre-built Go binary (~15-20MB)
+#   ✓ Pre-built React frontend (~300KB)
+#   ✓ 7z tool (~5MB)
+#   ✓ RAR tools on x86_64 only (~7MB)
+#   ✓ Runtime dependencies (minimal)
 #
-# Image size: ~100-150MB (Alpine + Go binary + frontend + rar tools)
-# Build time: ~2-3 minutes (no compilation, just copying + rar download)
-# No Node.js or Go toolchain in final image - runtime only!
+# What's NOT included:
+#   ✗ Go toolchain
+#   ✗ Node.js
+#   ✗ npm/yarn
+#   ✗ C compiler
+#   ✗ Build tools
+#
+# Expected image size: 80-120MB
+#
+# Important: NO COMPILATION happens when running docker build!
+# This is a pure artifact copy image.
+# ============================================

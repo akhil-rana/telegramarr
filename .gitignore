@@ -182,3 +182,4 @@ config.yaml
 !**/package-lock.json
 !src/cmd/
 !src/cmd/**
+/bin

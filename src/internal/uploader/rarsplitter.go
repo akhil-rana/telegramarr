@@ -27,11 +27,12 @@ func NewRarSplitter(logger *zap.Logger) *RarSplitter {
 // SplitFile splits a file into multiple RAR parts using WinRAR command line
 // Each RAR part will contain a portion of the original file without compression
 // isPremium determines the max file size (2GB for free, 4GB for premium)
+// splitSizeGB: custom split size in GB (0 = use max according to isPremium, max 4GB)
 // progressCallback is called with (bytesProcessed, totalBytes, percentage)
 // If RAR files already exist with correct sizes, they will be reused (no re-splitting)
 // Creates a subfolder named after the original file in outputDir
 // rarNameConfig: optional configuration for shortened RAR filename (nil = use original)
-func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, progressCallback func(bytesProcessed, totalBytes int64, percent int), rarNameConfig *ShortenerConfig) ([]string, error) {
+func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, splitSizeGB float64, progressCallback func(bytesProcessed, totalBytes int64, percent int), rarNameConfig *ShortenerConfig) ([]string, error) {
 	fileInfo, err := os.Stat(inputPath)
 	if err != nil {
 		rs.logger.Error("Failed to stat file", zap.String("file", inputPath), zap.Error(err))
@@ -46,22 +47,81 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 	fileSubDir := filepath.Join(outputDir, fileNameWithoutExt)
 
 	// RAR file split sizes
-	// RAR split: 4000 MiB for premium, 2000 MiB for free
-	// Effective size: slightly less for Telegram compatibility (4096 part limit × 512KB parts)
+	// Telegram uses 1024 for KB→MB, then 1000 for MB→GB conversion
+	// So exact sizes are: 1GB = 1,000 MB (1024×1024×1000), 2GB = 2,000 MB, 4GB = 4,000 MB
+	// RAR's -v parameter uses MiB (binary): -v1000m = 1000 MiB, -v2000m = 2000 MiB, etc.
 	var rarVolumeMB int64
+	var effectivePartSize int64
+	var maxAllowedSizeGB float64
+
+	// Determine max allowed size based on account type
 	if isPremium {
-		rarVolumeMB = 4000 // 4GB for premium
+		maxAllowedSizeGB = 4.0 // 4GB for premium
 	} else {
-		rarVolumeMB = 2000 // 2GB for free
+		maxAllowedSizeGB = 2.0 // 2GB for free
 	}
 
-	// Also track the effective part size for progress/logging
-	// This is what Telegram can actually receive (4096 parts × 512KB)
-	var effectivePartSize int64
-	if isPremium {
-		effectivePartSize = int64(4193452032) // 4GB limit shown to Telegram (3999 MiB)
+	if splitSizeGB > 0 {
+		// Use custom split size, but enforce account type limit
+		if splitSizeGB > maxAllowedSizeGB {
+			rs.logger.Warn("Custom split size exceeds account limit, clamping to max allowed",
+				zap.Float64("requested_size_gb", splitSizeGB),
+				zap.Float64("max_allowed_gb", maxAllowedSizeGB),
+				zap.Bool("premium", isPremium))
+			splitSizeGB = maxAllowedSizeGB
+		}
+		// For Telegram GB display: splitSizeGB = splitSizeGB * 1000 MB (in Telegram terms)
+		rarVolumeMB = int64(splitSizeGB * 1000)
+		// Effective bytes for progress tracking: GB * 1000 MB * 1024 KB/MB * 1024 bytes/KB
+		effectivePartSize = rarVolumeMB * 1024 * 1024
+		rs.logger.Info("Using custom split size",
+			zap.Float64("split_size_gb", splitSizeGB),
+			zap.Int64("rar_volume_mib", rarVolumeMB),
+			zap.Int64("effective_bytes", effectivePartSize))
 	} else {
-		effectivePartSize = int64(2097152000) // 2GB limit shown to Telegram (2000 MiB)
+		// Use maximum according to account type
+		if isPremium {
+			// 4GB: use 4000 MiB
+			rarVolumeMB = 4000
+			effectivePartSize = int64(4194304000) // 4000 * 1024 * 1024
+		} else {
+			// 2GB: use 2000 MiB
+			rarVolumeMB = 2000
+			effectivePartSize = int64(2097152000) // 2000 * 1024 * 1024
+		}
+		rs.logger.Info("Using default split size based on account type",
+			zap.Bool("premium", isPremium),
+			zap.Int64("rar_volume_mib", rarVolumeMB),
+			zap.Int64("effective_bytes", effectivePartSize))
+	}
+
+	if splitSizeGB > 0 {
+		// Use custom split size, but enforce account type limit
+		if splitSizeGB > maxAllowedSizeGB {
+			rs.logger.Warn("Custom split size exceeds account limit, clamping to max allowed",
+				zap.Float64("requested_size_gb", splitSizeGB),
+				zap.Float64("max_allowed_gb", maxAllowedSizeGB),
+				zap.Bool("premium", isPremium))
+			splitSizeGB = maxAllowedSizeGB
+		}
+		// Convert GB to MiB for RAR: Telegram uses 1000 MB per GB, so GB * 1000 = MiB
+		// This matches the default values: 2GB = 2000 MiB, 4GB = 4000 MiB
+		rarVolumeMB = int64(splitSizeGB * 1000)
+		// Convert GB to bytes using Telegram's formula: GB * 1024 * 1024 * 1000
+		effectivePartSize = int64(splitSizeGB * 1024 * 1024 * 1000)
+		rs.logger.Info("Using custom split size", zap.Float64("split_size_gb", splitSizeGB), zap.Int64("rar_volume_mb", rarVolumeMB))
+	} else {
+		// Use maximum according to account type
+		if isPremium {
+			rarVolumeMB = 4000                                // 4GB in MiB
+			effectivePartSize = int64(4 * 1024 * 1024 * 1000) // 4GB = 4,194,304,000 bytes
+		} else {
+			rarVolumeMB = 2000                                // 2GB in MiB
+			effectivePartSize = int64(2 * 1024 * 1024 * 1000) // 2GB = 2,097,152,000 bytes
+		}
+		rs.logger.Info("Using default split size based on account type",
+			zap.Bool("premium", isPremium),
+			zap.Int64("rar_volume_mb", rarVolumeMB))
 	}
 
 	// Calculate number of parts needed
@@ -122,13 +182,13 @@ func (rs *RarSplitter) SplitFile(inputPath string, outputDir string, partSize in
 	// rar a -ep1 -v<size>m -m0 -y <output.rar> <input>
 	// a: Add files to archive
 	// -ep1: Exclude base folder from paths
-	// -v<size>m: Create volumes (split) with specified size in MiB
+	// -v<size>m: Create volumes (split) with specified size in MiB (binary)
 	// -m0: Store (no compression)
 	// -y: Assume Yes on all queries
 	// RAR output will be named: basename.part1.rar, basename.part2.rar, etc.
 	rarCmd := exec.Command("rar", "a",
 		"-ep1",
-		fmt.Sprintf("-v%dm", rarVolumeMB), // Use MiB for RAR volume size
+		fmt.Sprintf("-v%dm", rarVolumeMB), // MiB for RAR volume size
 		"-m0",
 		"-y",
 		fmt.Sprintf("%s.rar", rarOutputBase),

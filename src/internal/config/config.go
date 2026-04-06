@@ -36,6 +36,7 @@ func Load(configPath string, logger *zap.Logger) (*Config, error) {
 	viper.SetDefault("paths.radarr_movies", "./movies/")
 	viper.SetDefault("paths.sonarr_tvshows", "./tvshows/")
 	viper.SetDefault("tmdb.enabled", false)
+	viper.SetDefault("telegram.archive_split_size", 0)
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config: %w", err)

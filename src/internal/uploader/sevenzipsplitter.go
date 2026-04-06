@@ -26,10 +26,11 @@ func NewSevenZipSplitter(logger *zap.Logger) *SevenZipSplitter {
 // SplitFile splits a file into multiple 7z parts using 7z command line
 // Each 7z part will contain a portion of the original file without compression
 // isPremium determines the max file size (2GB for free, 4GB for premium)
+// splitSizeGB: custom split size in GB (0 = use max according to isPremium, max 4GB)
 // progressCallback is called with (bytesProcessed, totalBytes, percentage)
 // Creates a subfolder named after the original file in outputDir
 // archiveNameConfig: optional configuration for shortened 7z filename (nil = use original)
-func (sz *SevenZipSplitter) SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, progressCallback func(bytesProcessed, totalBytes int64, percent int), archiveNameConfig *ShortenerConfig) ([]string, error) {
+func (sz *SevenZipSplitter) SplitFile(inputPath string, outputDir string, partSize int64, isPremium bool, splitSizeGB float64, progressCallback func(bytesProcessed, totalBytes int64, percent int), archiveNameConfig *ShortenerConfig) ([]string, error) {
 	fileInfo, err := os.Stat(inputPath)
 	if err != nil {
 		sz.logger.Error("Failed to stat file", zap.String("file", inputPath), zap.Error(err))
@@ -44,10 +45,65 @@ func (sz *SevenZipSplitter) SplitFile(inputPath string, outputDir string, partSi
 	fileSubDir := filepath.Join(outputDir, fileNameWithoutExt)
 
 	// 7z split sizes (same as RAR)
-	// 7z split: 4000 MiB for premium, 2000 MiB for free
-	maxPartSize := int64(2000 * 1024 * 1024) // 2000 MiB for free
+	// Telegram uses 1024 for KB→MB, then 1000 for MB→GB conversion
+	// So exact sizes are: 1GB = 1,048,576,000 bytes, 2GB = 2,097,152,000 bytes, 4GB = 4,194,304,000 bytes
+	var maxPartSize int64
+	var maxAllowedSizeGB float64
+
+	// Determine max allowed size based on account type
 	if isPremium {
-		maxPartSize = int64(4000 * 1024 * 1024) // 4000 MiB for premium
+		maxAllowedSizeGB = 4.0 // 4GB for premium
+	} else {
+		maxAllowedSizeGB = 2.0 // 2GB for free
+	}
+
+	if splitSizeGB > 0 {
+		// Use custom split size, but enforce account type limit
+		if splitSizeGB > maxAllowedSizeGB {
+			sz.logger.Warn("Custom split size exceeds account limit, clamping to max allowed",
+				zap.Float64("requested_size_gb", splitSizeGB),
+				zap.Float64("max_allowed_gb", maxAllowedSizeGB),
+				zap.Bool("premium", isPremium))
+			splitSizeGB = maxAllowedSizeGB
+		}
+		// Convert GB to bytes using Telegram's formula: GB * 1024 * 1024 * 1000
+		maxPartSize = int64(splitSizeGB * 1024 * 1024 * 1000)
+		sz.logger.Info("Using custom split size", zap.Float64("split_size_gb", splitSizeGB), zap.Int64("max_part_size_bytes", maxPartSize))
+	} else {
+		// Use maximum according to account type
+		if isPremium {
+			// 4GB exact: 4 * 1024 * 1024 * 1000 = 4,194,304,000 bytes
+			maxPartSize = int64(4194304000)
+		} else {
+			// 2GB exact: 2 * 1024 * 1024 * 1000 = 2,097,152,000 bytes
+			maxPartSize = int64(2097152000)
+		}
+		sz.logger.Info("Using default split size based on account type",
+			zap.Bool("premium", isPremium),
+			zap.Int64("max_part_size_bytes", maxPartSize))
+	}
+
+	if splitSizeGB > 0 {
+		// Use custom split size, but enforce account type limit
+		if splitSizeGB > maxAllowedSizeGB {
+			sz.logger.Warn("Custom split size exceeds account limit, clamping to max allowed",
+				zap.Float64("requested_size_gb", splitSizeGB),
+				zap.Float64("max_allowed_gb", maxAllowedSizeGB),
+				zap.Bool("premium", isPremium))
+			splitSizeGB = maxAllowedSizeGB
+		}
+		// Convert GB to bytes using Telegram's formula: GB * 1024 * 1024 * 1000
+		maxPartSize = int64(splitSizeGB * 1024 * 1024 * 1000)
+		sz.logger.Info("Using custom split size", zap.Float64("split_size_gb", splitSizeGB))
+	} else {
+		// Use maximum according to account type
+		maxPartSize = int64(2 * 1024 * 1024 * 1000) // 2GB = 2,097,152,000 bytes
+		if isPremium {
+			maxPartSize = int64(4 * 1024 * 1024 * 1000) // 4GB = 4,194,304,000 bytes
+		}
+		sz.logger.Info("Using default split size based on account type",
+			zap.Bool("premium", isPremium),
+			zap.Int64("max_part_size_bytes", maxPartSize))
 	}
 
 	// Calculate the archive base name

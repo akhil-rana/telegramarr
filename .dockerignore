@@ -13,11 +13,14 @@ data/
 *.log
 *.swp
 *.swo
+/movies
+/tvshows
 
 # Build artifacts (exclude all but prod)
 build/*
 !build/prod/
 !build/prod/**
+/bin
 
 # Go build artifacts
 *.o
