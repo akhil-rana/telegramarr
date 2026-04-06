@@ -25,14 +25,6 @@ WORKDIR /app
 # Copy entire source code
 COPY . .
 
-# Debug: Check what was copied
-RUN echo "=== Checking copied files ===" && \
-    ls -la /app/ && \
-    echo "=== Checking src directory ===" && \
-    ls -la /app/src/ && \
-    echo "=== Checking src/ui directory ===" && \
-    ls -la /app/src/ui/ || echo "src/ui does not exist"
-
 # Build React frontend
 RUN echo "Building React frontend..." && \
     cd src/ui && \

@@ -14,13 +14,6 @@ data/
 *.swp
 *.swo
 
-# Node/npm (exclude build artifacts only, keep source files)
-src/ui/node_modules/
-src/ui/dist/
-src/ui/.next/
-src/ui/coverage/
-src/ui/.vite/
-
 # Build artifacts (exclude all but prod)
 build/*
 !build/prod/
@@ -47,3 +40,12 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# Node - keep source, exclude build artifacts only
+!src/
+!src/ui/
+src/ui/node_modules/
+src/ui/dist/
+src/ui/.next/
+src/ui/coverage/
+src/ui/.vite/
