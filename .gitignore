@@ -175,3 +175,7 @@ test/
 telegramarr
 config.yaml
 *.yaml
+
+# BUT DO include package.json files (needed for builds)
+!**/package.json
+!**/package-lock.json
