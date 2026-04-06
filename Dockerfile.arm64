@@ -2,6 +2,9 @@
 # Uses multiarch/qemu-user-static for x86-64 RAR binary emulation on ARM64
 # Expects pre-built ARM64 artifacts from build.sh in build/prod/
 
+# Get QEMU x86_64 binary from the x86_64-specific image
+FROM multiarch/qemu-user-static:x86_64-aarch64 as qemu
+
 FROM arm64v8/alpine:latest
 
 WORKDIR /app
@@ -17,9 +20,8 @@ RUN apk add --no-cache \
     curl \
     tar
 
-# Copy QEMU static binary from multiarch/qemu-user-static image
-# This enables x86-64 binary execution on ARM64 systems
-COPY --from=multiarch/qemu-user-static:latest /usr/bin/qemu-x86_64-static /usr/bin/qemu-x86_64-static
+# Copy QEMU x86_64 binary from multiarch image
+COPY --from=qemu /usr/bin/qemu-x86_64-static /usr/bin/qemu-x86_64-static
 
 # Download and extract RAR binaries (x86-64)
 # QEMU will handle execution on ARM64
@@ -70,9 +72,9 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 # Notes:
 # ============================================
 # - ARM64 (aarch64) Alpine-based image (minimal, ~120MB)
-# - QEMU x86_64 static: From multiarch/qemu-user-static for x86-64 RAR binary emulation
+# - QEMU x86_64: From multiarch/qemu-user-static:x86_64-aarch64
 # - RAR binaries: x86-64 versions run via QEMU emulation
-# - Go binary: MUST be compiled for ARM64 (native execution, no emulation)
+# - Go binary: MUST be compiled for ARM64 (native execution)
 # - Image size: ~150-180MB (Alpine ARM64 + Go binary + frontend + QEMU)
 #
 # Build for ARM64:

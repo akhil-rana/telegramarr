@@ -1,5 +1,8 @@
 # ARM64 Development Dockerfile - builds and runs everything in container
-# Alpine-based, minimal, uses multiarch/qemu-user-static for x86-64 RAR binary emulation
+# Alpine-based, minimal, native ARM64 Go build + x86-64 RAR binary emulation via QEMU
+
+# Get QEMU x86_64 binary for RAR binary emulation on ARM64
+FROM multiarch/qemu-user-static:x86_64-aarch64 as qemu
 
 FROM arm64v8/golang:1.25-alpine AS base
 
@@ -19,12 +22,11 @@ RUN apk add --no-cache \
     tini \
     libc6-compat
 
-# Copy QEMU static binary from multiarch/qemu-user-static image
-# This enables x86-64 binary execution on ARM64 systems
-COPY --from=multiarch/qemu-user-static:latest /usr/bin/qemu-x86_64-static /usr/bin/qemu-x86_64-static
+# Copy QEMU x86_64 binary from multiarch image for RAR binary emulation
+COPY --from=qemu /usr/bin/qemu-x86_64-static /usr/bin/qemu-x86_64-static
 
-# Download and extract RAR binaries (x86-64)
-# QEMU will handle execution on ARM64
+# Download and extract x86-64 RAR binaries
+# QEMU will transparently handle execution on ARM64
 RUN curl -LsSf https://www.rarlab.com/rar/rarlinux-x64-720.tar.gz > /tmp/rarlinux.tar.gz && \
     tar xf /tmp/rarlinux.tar.gz -C /tmp && \
     install -v -m755 /tmp/rar/unrar /usr/local/bin && \
@@ -114,9 +116,9 @@ CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
 # Notes:
 # ============================================
 # - ARM64 (aarch64) Alpine-based image (minimal)
-# - QEMU x86_64 static: From multiarch/qemu-user-static for x86-64 RAR binary emulation
-# - RAR binaries: x86-64 versions run via QEMU emulation
-# - Go binary: Compiled natively for ARM64 (no emulation needed)
+# - Go binary: Compiled natively for ARM64 (native execution)
+# - QEMU x86_64: From multiarch/qemu-user-static:x86_64-aarch64
+# - RAR binaries: x86-64 versions run via QEMU emulation (just like Dockerfile.arm64)
 # - Go 1.25 (required by go.mod)
 # - Image size: ~900MB-1GB (with build tools)
 # - Build time: ~15-20 minutes on ARM64 system
