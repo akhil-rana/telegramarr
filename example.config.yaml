@@ -1,0 +1,72 @@
+# Telegramarr - Webhook to Telegram Bridge for Radarr & Sonarr
+# This configuration file sets up the connection to Telegram and controls upload behavior
+
+
+# ========================================================================
+# APPLICATION CONFIGURATION
+# ========================================================================
+app:
+  # To get a Telegram channel ID, you can use a bot like @getidsbot
+  # forward any message from channel to the bot and it will reply with the channel ID
+  # remove the (-/+)100 from starting of the ID (if present) to get the correct ID.
+  radarr_channel_id: 0000000000            # Telegram channel for Radarr movie uploads
+  sonarr_channel_id: 0000000000            # Telegram channel for Sonarr episode uploads
+  
+  # Progress message updates
+  message_refresh_interval: 5              # Update progress message every N seconds (default: 5)
+  
+  # Webhook processing delay
+  delay_time: 30                           # Wait N seconds after webhook before processing
+                                           # Useful for rclone mounts that need time to sync
+  
+  # Archive splitting configuration
+  split_archive_format: "rar"              # Format: "rar" (recommended) or "7z"
+                                           # arm64/armv7 users must use "7z" as "rar" is not supported on those platforms
+  archive_split_size: 0                    # Split size in GB:
+                                           #   0 = use account default (4GB premium, 2GB free)
+                                           #   1.5, 2, 3, 4 = custom size (max: 4GB)
+  
+  # Poster and metadata messages
+  send_movie_details_message: true         # Send movie poster + details before upload (Radarr)
+  send_series_details_message: false       # Send series poster + details before upload (Sonarr)
+
+
+# ========================================================================
+# WEB SERVER CONFIGURATION
+# ========================================================================
+server:
+  port: 8987                               # Web server port (default: 8987)
+  host: 0.0.0.0                            # Listen on all network interfaces (default: 0.0.0.0)
+
+
+# ========================================================================
+# TELEGRAM API CONFIGURATION
+# ========================================================================
+telegram:
+  # API credentials - these are the OFFICIAL Telegram desktop app credentials (no need to change)
+  # If you want to use your own app ID and hash, get them from https://my.telegram.org/apps
+  app_id: 2040
+  app_hash: "b18441a1ff607e10a989891a5462e627"
+  
+  # Device identification (used for Telegram API)
+  device_model: "Desktop"
+  system_version: "Windows 11"
+  app_version: "6.7.1"
+  lang_pack: "tdesktop"
+  system_lang_code: "en-US"
+  lang_code: "en"
+  
+  # Rate limiting configuration
+  rate_limit: true               # Disable rate limiting for faster uploads (set to true to enable)
+                                 # premium accounts can set to false for faster uploads
+  rate: 80                       # Rate limit interval in milliseconds (default: 100ms)
+  rate_burst: 8                  # Burst capacity for rate limiting (default: 5 requests)
+  max_retries: 5                 # Maximum retry attempts on Telegram errors (default: 5)
+
+
+# ========================================================================
+# LOGGING CONFIGURATION
+# ========================================================================
+logging:
+  level: info                              # Log level: debug, info, warn, error (default: info)
+  format: json                             # Log format: json (structured) or text

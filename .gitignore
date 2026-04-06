@@ -1,3 +1,6 @@
+
+# Python backup
+src-old/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -165,4 +168,19 @@ cython_debug/
 env.py
 /temp
 *.session*
-*.json
+/data/session.json
+teldrive/
+build/
+test/
+/telegramarr
+bin/telegramarr
+config.yaml
+*.yaml
+
+# BUT DO include package.json files and cmd directory (needed for builds)
+!**/package.json
+!**/package-lock.json
+!src/cmd/
+!src/cmd/**
+!/version.json
+/bin
