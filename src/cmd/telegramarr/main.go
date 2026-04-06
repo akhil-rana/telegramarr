@@ -32,13 +32,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Override port from PORT environment variable if set
-	if portStr := os.Getenv("PORT"); portStr != "" {
-		if port, err := strconv.Atoi(portStr); err == nil {
-			cfg.Server.Port = port
-		}
-	}
-
 	// Ensure data directories exist
 	dataDir, err := config.GetDataDir()
 	if err != nil {

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Development server - Builds and runs both frontend and backend
+# Development server - Builds frontend completely and runs backend with static files
 
 set -e
 
@@ -15,62 +15,71 @@ if [ -s "$NVM_DIR/nvm.sh" ]; then
   \. "$NVM_DIR/bash_completion"
 fi
 
+# Read port from config.yaml
+if command -v yq &> /dev/null; then
+  PORT=$(yq eval '.server.port' config.yaml 2>/dev/null || echo "8987")
+else
+  # Fallback if yq is not available
+  PORT=$(grep "port:" config.yaml | head -1 | grep -oE '[0-9]+' || echo "8987")
+fi
+
 cleanup() {
   kill $GO_PID 2>/dev/null || true
-  kill $VITE_PID 2>/dev/null || true
   wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
-# Kill any existing telegramarr or node processes on dev ports
+# Kill any existing telegramarr processes
 echo "Cleaning up any existing processes..."
 pkill -f "telegramarr" 2>/dev/null || true
-pkill -f "vite.*8008" 2>/dev/null || true
 
-# Kill processes using ports 8008 and 8009 directly
-lsof -ti:8008 | xargs kill -9 2>/dev/null || true
-lsof -ti:8009 | xargs kill -9 2>/dev/null || true
-lsof -ti:8010 | xargs kill -9 2>/dev/null || true
+# Kill processes using the configured port (ignore errors if port not in use)
+lsof -ti:$PORT 2>/dev/null | xargs kill -9 2>/dev/null || true
 
 sleep 1
 
 # Create build directory if it doesn't exist
 mkdir -p "$BUILD_DIR"
 
-# Build frontend
-echo "Building React frontend..."
+# Build frontend (production build - same as Docker)
+echo "Building React frontend (production build)..."
 cd "$UI_DIR"
 if [ ! -d "node_modules" ]; then
   echo "Installing npm dependencies..."
   npm install
 fi
+echo "Running: npm run build"
 npm run build
+if [ ! -d "dist" ] || [ -z "$(ls -A dist 2>/dev/null)" ]; then
+  echo "ERROR: Frontend build failed or dist folder is empty!"
+  exit 1
+fi
+echo "✓ Frontend build complete"
+ls -lh dist/
 cd "$PROJECT_DIR"
 
 # Build Go backend
+echo ""
 echo "Building Go backend..."
 cd "$PROJECT_DIR/src"
 go build -o "$BINARY_PATH" ./cmd/telegramarr
 cd "$PROJECT_DIR"
+echo "✓ Backend build complete"
 
+echo ""
 echo "Starting Telegramarr Development Server"
 echo ""
 
-# Start Vite dev server on 8008
-echo "Starting Vite dev server on port 8008..."
-cd "$UI_DIR"
-npm run dev -- --host 0.0.0.0 --port 8008 &
-VITE_PID=$!
-cd "$PROJECT_DIR"
-
-# Start backend on 8009
-echo "Starting Go backend on port 8009..."
-PORT=8009 "$BINARY_PATH" &
+# Start backend using config port (serves static files from dist)
+echo "Starting Go backend on port $PORT (from config.yaml)..."
+echo "Static files served from: $UI_DIR/dist/"
+echo "API endpoint: http://localhost:$PORT/api/*"
+"$BINARY_PATH" &
 GO_PID=$!
 
 echo ""
-echo "✓ Frontend running on http://localhost:8008"
-echo "✓ Backend running on http://localhost:8009"
+echo "✓ Frontend static files built at: $UI_DIR/dist"
+echo "✓ Backend running on http://localhost:$PORT"
 echo "✓ Binary at: $BINARY_PATH"
 echo ""
 echo "Press Ctrl+C to stop"

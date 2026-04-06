@@ -27,14 +27,12 @@ func Load(configPath string, logger *zap.Logger) (*Config, error) {
 	viper.AutomaticEnv()
 
 	// Set defaults
-	viper.SetDefault("server.port", 8080)
+	viper.SetDefault("server.port", 8987)
 	viper.SetDefault("server.host", "0.0.0.0")
 	viper.SetDefault("logging.level", "info")
 	viper.SetDefault("logging.format", "json")
 	viper.SetDefault("telegram.message_refresh_interval", 2)
 	viper.SetDefault("telegram.delay_time", 30)
-	viper.SetDefault("paths.radarr_movies", "./movies/")
-	viper.SetDefault("paths.sonarr_tvshows", "./tvshows/")
 	viper.SetDefault("telegram.archive_split_size", 0)
 
 	if err := viper.ReadInConfig(); err != nil {
@@ -67,8 +65,6 @@ func Load(configPath string, logger *zap.Logger) (*Config, error) {
 		zap.Int("server_port", cfg.Server.Port),
 		zap.Int("message_refresh_interval", cfg.App.MessageRefreshInterval),
 		zap.Int("delay_time", cfg.App.DelayTime),
-		zap.String("radarr_movies_path", cfg.Paths.RadarrMoviesPath),
-		zap.String("sonarr_tvshows_path", cfg.Paths.SonarrTVShowsPath),
 	)
 
 	return &cfg, nil

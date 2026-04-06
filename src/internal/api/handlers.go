@@ -1163,16 +1163,12 @@ func (s *Server) processRadarrWebhook(payload *webhook.RadarrWebhookPayload) {
 		zap.Duration("delay", delayTime))
 	time.Sleep(delayTime)
 
-	// Map Radarr path to container path if needed
+	// Use the file path from webhook (must be in /movies/)
 	filePath := payload.MovieFile.Path
-	if strings.HasPrefix(filePath, "/movies/") && s.config.Paths.RadarrMoviesPath != "/movies/" {
-		// Replace /movies/ with configured path
-		filePath = strings.Replace(filePath, "/movies/", s.config.Paths.RadarrMoviesPath, 1)
-	}
 
 	// Verify file exists
 	if _, err := os.Stat(filePath); err != nil {
-		s.logger.Error("Radarr file does not exist", zap.Error(err), zap.String("originalPath", payload.MovieFile.Path), zap.String("mappedPath", filePath))
+		s.logger.Error("Radarr file does not exist", zap.Error(err), zap.String("filePath", filePath))
 		return
 	}
 
@@ -1257,16 +1253,12 @@ func (s *Server) processSonarrWebhook(payload *webhook.SonarrWebhookPayload) {
 		zap.Duration("delay", delayTime))
 	time.Sleep(delayTime)
 
-	// Map Sonarr path to container path if needed
+	// Use the file path from webhook (must be in /tvshows/)
 	filePath := payload.EpisodeFile.Path
-	if strings.HasPrefix(filePath, "/tvshows/") && s.config.Paths.SonarrTVShowsPath != "/tvshows/" {
-		// Replace /tvshows/ with configured path
-		filePath = strings.Replace(filePath, "/tvshows/", s.config.Paths.SonarrTVShowsPath, 1)
-	}
 
 	// Verify file exists
 	if _, err := os.Stat(filePath); err != nil {
-		s.logger.Error("Sonarr file does not exist", zap.Error(err), zap.String("originalPath", payload.EpisodeFile.Path), zap.String("mappedPath", filePath))
+		s.logger.Error("Sonarr file does not exist", zap.Error(err), zap.String("filePath", filePath))
 		return
 	}
 

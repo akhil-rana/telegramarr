@@ -3,7 +3,6 @@ package config
 type Config struct {
 	Telegram TelegramConfig `mapstructure:"telegram" validate:"required"`
 	App      AppConfig      `mapstructure:"app"`
-	Paths    PathsConfig    `mapstructure:"paths"`
 	Server   ServerConfig   `mapstructure:"server"`
 	Logging  LoggingConfig  `mapstructure:"logging"`
 }
@@ -59,11 +58,4 @@ type ServerConfig struct {
 type LoggingConfig struct {
 	Level  string `mapstructure:"level" default:"info"`
 	Format string `mapstructure:"format" default:"json"`
-}
-
-type PathsConfig struct {
-	// Path where Radarr stores movies (with trailing slash)
-	RadarrMoviesPath string `mapstructure:"radarr_movies" default:"./movies/"`
-	// Path where Sonarr stores TV shows (with trailing slash)
-	SonarrTVShowsPath string `mapstructure:"sonarr_tvshows" default:"./tvshows/"`
 }

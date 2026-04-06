@@ -88,8 +88,8 @@ RUN mkdir -p /app/data /app/temp && \
 # Switch to non-root user
 USER telegramarr
 
-# Expose port
-EXPOSE 8080
+# Expose port (set in config.yaml, default: 8987)
+EXPOSE 8987
 
 # Health check (no wget, use lightweight alternative)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
@@ -100,51 +100,3 @@ ENTRYPOINT ["/sbin/tini", "--"]
 
 # Start application
 CMD ["/app/telegramarr", "-config", "/app/config.yaml"]
-
-# ============================================
-# BUILD INSTRUCTIONS
-# ============================================
-#
-# Build and push multi-arch images:
-#   docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7,linux/386 \
-#     -t akhilrana/telegramarr:0.7.0-beta \
-#     -t akhilrana/telegramarr:latest \
-#     --push .
-#
-# Build locally (current arch only):
-#   docker build -t telegramarr:0.7.0-beta .
-#
-# Run container:
-#   docker run -d \
-#     --name telegramarr \
-#     -p 8080:8080 \
-#     -v $(pwd)/config.yaml:/app/config.yaml:ro \
-#     -v $(pwd)/data:/app/data \
-#     -v /mnt/movies:/movies \
-#     -v /mnt/tvshows:/tvshows \
-#     -e TZ=UTC \
-#     akhilrana/telegramarr:0.7.0-beta
-#
-# ============================================
-# IMAGE COMPOSITION
-# ============================================
-# Base: Alpine Linux (~7MB)
-# 
-# Final image includes ONLY:
-#   ✓ Go binary (~15-20MB, stripped)
-#   ✓ React frontend (~300KB)
-#   ✓ p7zip (~5MB)
-#   ✓ RAR tools on amd64 only (~5MB)
-#   ✓ Runtime libs only (no dev tools)
-#
-# NOT included:
-#   ✗ Go toolchain
-#   ✗ Node.js/npm/yarn
-#   ✗ Source code
-#   ✗ Build artifacts
-#   ✗ C compiler
-#   ✗ Git
-#   ✗ Any dev tools
-#
-# Expected final size: 45-75MB per architecture
-# ============================================

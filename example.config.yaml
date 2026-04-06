@@ -32,18 +32,10 @@ app:
 
 
 # ========================================================================
-# FILE PATHS
-# ========================================================================
-paths:
-  radarr_movies: "./movies/"               # Path where Radarr stores movies (include trailing slash)
-  sonarr_tvshows: "./tvshows/"             # Path where Sonarr stores TV shows (include trailing slash)
-
-
-# ========================================================================
 # WEB SERVER CONFIGURATION
 # ========================================================================
 server:
-  port: 8080                               # Web server port (default: 8080)
+  port: 8987                               # Web server port (default: 8987)
   host: 0.0.0.0                            # Listen on all network interfaces (default: 0.0.0.0)
 
 

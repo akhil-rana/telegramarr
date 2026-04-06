@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import './LoggedIn.css'
-import WebhookTest from './WebhookTest'
 
 export default function LoggedIn({ user, onLogout }) {
   const [isLoggingOut, setIsLoggingOut] = useState(false)
@@ -48,12 +47,6 @@ export default function LoggedIn({ user, onLogout }) {
 
           <p className="footer-text">Telegramarr is ready for file uploads</p>
         </div>
-
-        {import.meta.env.DEV && (
-          <div className="webhook-test-container">
-            <WebhookTest apiBaseUrl="" />
-          </div>
-        )}
       </div>
     </div>
   )
