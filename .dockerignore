@@ -1,5 +1,55 @@
-*
-!src/utils/validations.py
-!src/scripts/telegram.py
-!src/main.py
-!src/requirements.txt
+# Git
+.git
+.gitignore
+.github
+
+# Development & Test
+test/
+temp/
+teldrive/
+src-old/
+bin/
+data/
+*.log
+*.swp
+*.swo
+/movies
+/tvshows
+
+# All build artifacts (Docker will compile)
+build/
+/bin
+
+# Go build artifacts
+*.o
+*.a
+*.so
+.go/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Docker
+docker-compose.override.yml
+
+# Node modules (will be installed in Docker)
+src/ui/node_modules/
+src/ui/.next/
+src/ui/coverage/
+src/ui/.vite/
+
+# Only keep source code needed for Docker build
+# - src/cmd/* (Go entry points)
+# - src/internal/* (Go packages)
+# - src/ui/src/* (React source)
+# - Package files and configs are included by default
